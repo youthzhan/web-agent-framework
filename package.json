@@ -1,0 +1,43 @@
+{
+  "name": "web-agent-framework",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Commercial-ready extensible web Agent framework based on LangGraph, Fastify, Zod, Redis and Pino.",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/src/index.js",
+    "infra:up": "docker compose up -d redis",
+    "infra:down": "docker compose down",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.0.1",
+    "@langchain/anthropic": "^1.0.0",
+    "@langchain/core": "^1.0.0",
+    "@langchain/deepagents": "npm:deepagents@^1.0.0",
+    "@langchain/langgraph": "^1.0.0",
+    "@langchain/langgraph-checkpoint-redis": "^1.0.0",
+    "@langchain/openai": "^1.0.0",
+    "dotenv": "^17.2.1",
+    "fastify": "^5.4.0",
+    "ioredis": "^5.6.1",
+    "langchain": "^1.0.0",
+    "pino": "^9.9.0",
+    "uuid": "^11.1.0",
+    "yaml": "^2.8.0",
+    "zod": "^4.0.17"
+  },
+  "devDependencies": {
+    "@types/node": "^24.2.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  }
+}
