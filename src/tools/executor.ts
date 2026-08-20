@@ -11,6 +11,7 @@ import type { ToolRegistry } from "./types.js";
 type ToolExecutionOptions = {
   allowHighRisk?: boolean;
   skillName: string;
+  executionMode: ToolExecutionMode;
 };
 
 export class HumanConfirmationRequired extends Error {
@@ -70,6 +71,7 @@ export class ToolExecutor {
       data: {
         toolName: tool.name,
         toolCallId: call.toolCallId,
+        mode: options.executionMode,
         risk: tool.risk,
         requiresConfirmation: tool.risk !== "low" && !options.allowHighRisk,
         args: checkpointArgs
@@ -82,6 +84,7 @@ export class ToolExecutor {
         userId: context.userId,
         toolName: tool.name,
         toolCallId: call.toolCallId,
+        executionMode: options.executionMode,
         risk: tool.risk
       },
       "tool_call"

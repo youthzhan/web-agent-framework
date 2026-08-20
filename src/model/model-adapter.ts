@@ -49,7 +49,7 @@ export class ModelAdapter {
       const text = messageContentToText(response.content);
       const usage = this.extractUsage(response);
       return usage ? { text, usage } : { text };
-    }, options.operation);
+    }, options.operation, options.timeoutMs);
   }
 
   async streamText(
@@ -86,7 +86,7 @@ export class ModelAdapter {
       }
 
       return usage ? { text, usage } : { text };
-    }, options.operation);
+    }, options.operation, options.timeoutMs);
   }
 
   async invokeJson<T>(
@@ -181,12 +181,13 @@ export class ModelAdapter {
 
   private async safeModelCall<T>(
     call: (signal: AbortSignal) => Promise<T>,
-    operation: string
+    operation: string,
+    timeoutMs = this.options.env.MODEL_TIMEOUT_MS
   ): Promise<T> {
     try {
       const result = await withTimeout(
         call,
-        this.options.env.MODEL_TIMEOUT_MS,
+        timeoutMs,
         `Model call timed out during ${operation}`,
         "MODEL_TIMEOUT"
       );

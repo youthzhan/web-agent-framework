@@ -26,6 +26,10 @@ export class RedisPersistenceStore implements PersistenceStore {
     return await this.redis.rpush(key, value);
   }
 
+  async llen(key: string): Promise<number> {
+    return await this.redis.llen(key);
+  }
+
   async expire(key: string, ttlSeconds: number): Promise<number> {
     return await this.redis.expire(key, ttlSeconds);
   }

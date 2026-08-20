@@ -277,7 +277,7 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         <button id="newChat" class="new-chat" type="button"><span>+</span><span>新对话</span></button>
         <div class="section-label">最近会话</div>
         <div id="sessions" class="sessions"></div>
-        <div class="sidebar-footer">会话列表保存在当前浏览器。消息与执行状态由服务端持久化。</div>
+        <div class="sidebar-footer">会话列表保存在当前浏览器。服务端会话状态由当前持久化后端管理。</div>
       </aside>
 
       <main id="conversation" class="conversation">
@@ -429,6 +429,12 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         saveSessions();
         renderSessions();
         byId("chatTitle").textContent = record.title;
+      }
+
+      function forgetSession(id) {
+        sessions = sessions.filter((session) => session.threadId !== id);
+        saveSessions();
+        renderSessions();
       }
 
       function getHeaders(acceptJson) {
@@ -710,7 +716,15 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         setRunState(false, "加载会话", "running");
         try {
           const response = await fetch("/v1/threads/" + encodeURIComponent(id), { headers: getHeaders(true) });
-          if (!response.ok) throw new Error(response.status === 404 ? "服务端没有找到该会话" : "加载会话失败");
+          if (response.status === 404) {
+            // Browser session metadata outlives the in-memory development
+            // backend after a server restart. Remove only this stale entry.
+            forgetSession(id);
+            startNewChat();
+            addActivity("已移除过期会话", "该会话不存在于当前服务端持久化后端。", "warning");
+            return;
+          }
+          if (!response.ok) throw new Error("加载会话失败");
           const data = await response.json();
           byId("userId").value = data.thread.userId;
           data.messages.forEach((message) => {

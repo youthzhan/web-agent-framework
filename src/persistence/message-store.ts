@@ -58,6 +58,29 @@ export class MessageStore {
       .map((item) => item.data);
   }
 
+  async count(threadId: string): Promise<number> {
+    return await this.redis.llen(this.key(threadId));
+  }
+
+  /**
+   * Reads by list offset so long-term memory can compact only the messages
+   * that have not been summarized yet, without loading the whole transcript.
+   */
+  async getRange(
+    threadId: string,
+    start: number,
+    end: number,
+    roles: MessageRole[] = ["user", "assistant"]
+  ): Promise<MessageRecord[]> {
+    const raw = await this.redis.lrange(this.key(threadId), start, end);
+    return raw
+      .map((item) => MessageRecordSchema.safeParse(JSON.parse(item)))
+      .filter((item): item is { success: true; data: MessageRecord } => {
+        return item.success && roles.includes(item.data.role);
+      })
+      .map((item) => item.data);
+  }
+
   async list(threadId: string, limit = 100): Promise<MessageRecord[]> {
     const raw = await this.redis.lrange(this.key(threadId), -limit, -1);
     return raw

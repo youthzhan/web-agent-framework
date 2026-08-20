@@ -8,6 +8,7 @@ import type { AppEnv } from "../config/env.js";
 import type { AppLogger } from "../common/logger.js";
 import type { MessageStore } from "../persistence/message-store.js";
 import type { ThreadStore } from "../persistence/thread-store.js";
+import type { ConversationMemoryService } from "../memory/conversation-memory-service.js";
 import type { ChatRequest, HumanConfirmation } from "../schemas/api.js";
 import { AgentGraphInputSchema } from "./state.js";
 import { AgentWorkflow } from "./workflow.js";
@@ -18,7 +19,8 @@ export class AgentService {
     private readonly logger: AppLogger,
     private readonly workflow: AgentWorkflow,
     private readonly messageStore: MessageStore,
-    private readonly threadStore: ThreadStore
+    private readonly threadStore: ThreadStore,
+    private readonly conversationMemory: ConversationMemoryService
   ) {}
 
   runChat(
@@ -118,20 +120,27 @@ export class AgentService {
                   content: input.request.message,
                   metadata: input.request.metadata
                 });
-                const history = await this.messageStore.getRecent(
-                  input.threadId,
-                  this.env.HISTORY_WINDOW_MESSAGES
-                );
+                const modelProvider =
+                  input.request.modelProvider ?? this.env.DEFAULT_MODEL_PROVIDER;
+                const context = await this.conversationMemory.buildContext({
+                  threadId: input.threadId,
+                  userId: input.userId,
+                  selection: {
+                    provider: modelProvider,
+                    ...(input.request.model
+                      ? { model: input.request.model }
+                      : {})
+                  }
+                });
                 return await this.workflow.streamNew(
                   AgentGraphInputSchema.parse({
                     requestId: input.requestId,
                     threadId: input.threadId,
                     userId: input.userId,
                     message: input.request.message,
-                    history,
-                    modelProvider:
-                      input.request.modelProvider ??
-                      this.env.DEFAULT_MODEL_PROVIDER,
+                    history: context.history,
+                    longTermMemory: context.longTermMemory,
+                    modelProvider,
                     model: input.request.model
                   })
                 );

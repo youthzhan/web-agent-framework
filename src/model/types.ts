@@ -29,9 +29,11 @@ export type ChatModelInstance = {
 export type JsonInvokeOptions = {
   operation: string;
   signal?: AbortSignal;
+  timeoutMs?: number;
 };
 
 export type TextInvokeOptions = {
   operation: string;
   signal?: AbortSignal;
+  timeoutMs?: number;
 };

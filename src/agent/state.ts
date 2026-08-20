@@ -15,6 +15,7 @@ export const AgentGraphInputSchema = z.object({
   userId: z.string(),
   message: z.string(),
   history: z.array(z.custom<MessageRecord>()).default([]),
+  longTermMemory: z.string().default(""),
   modelProvider: z.enum(["openai", "openai-compatible", "anthropic"]),
   model: z.string().optional()
 });
@@ -37,6 +38,10 @@ export const AgentState = Annotation.Root({
   history: Annotation<MessageRecord[]>({
     reducer: (_left, right) => right,
     default: () => []
+  }),
+  longTermMemory: Annotation<string>({
+    reducer: (_left, right) => right,
+    default: () => ""
   }),
   modelProvider: Annotation<ModelProvider>(),
   model: Annotation<string | undefined>({

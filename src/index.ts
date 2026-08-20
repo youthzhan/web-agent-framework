@@ -12,6 +12,8 @@ import { createLogger } from "./common/logger.js";
 import { formatSse } from "./common/sse.js";
 import { loadEnv } from "./config/env.js";
 import { ModelRouter } from "./model/model-router.js";
+import { ConversationMemoryService } from "./memory/conversation-memory-service.js";
+import { ConversationMemoryStore } from "./memory/conversation-memory-store.js";
 import { createRedisCheckpointer } from "./persistence/checkpointer.js";
 import { MemoryPersistenceStore } from "./persistence/memory.js";
 import { MessageStore } from "./persistence/message-store.js";
@@ -390,6 +392,15 @@ async function main(): Promise<void> {
 
   const messageStore = new MessageStore(persistence, env);
   const threadStore = new ThreadStore(persistence, env);
+  const memoryStore = new ConversationMemoryStore(persistence, env);
+  const modelRouter = new ModelRouter(env, logger);
+  const conversationMemory = new ConversationMemoryService(
+    env,
+    logger,
+    messageStore,
+    memoryStore,
+    modelRouter
+  );
   const registry = new InMemoryToolRegistry();
   registry.register(createFileReadTool(env));
   registry.register(createHttpRequestTool(env));
@@ -397,6 +408,7 @@ async function main(): Promise<void> {
   const skillLoader = new SkillLoader(env.skillsDirAbs, logger);
   const toolExecutor = new ToolExecutor(registry, threadStore, logger);
   const skillEngine = new SkillEngine(
+    env,
     skillLoader,
     registry,
     toolExecutor,
@@ -406,7 +418,7 @@ async function main(): Promise<void> {
   const workflow = new AgentWorkflow(
     env,
     logger,
-    new ModelRouter(env, logger),
+    modelRouter,
     skillLoader,
     skillEngine,
     messageStore,
@@ -418,7 +430,8 @@ async function main(): Promise<void> {
     logger,
     workflow,
     messageStore,
-    threadStore
+    threadStore,
+    conversationMemory
   );
 
   server.get("/health", async () => ({

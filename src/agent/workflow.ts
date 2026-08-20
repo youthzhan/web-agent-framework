@@ -12,13 +12,19 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { AppEnv } from "../config/env.js";
 import type { AppLogger } from "../common/logger.js";
 import { emitSseEvent, getRuntimeContext } from "../common/run-context.js";
-import { normalizeError } from "../common/errors.js";
+import { AppError, normalizeError } from "../common/errors.js";
 import type { MessageStore } from "../persistence/message-store.js";
 import type { ThreadStore } from "../persistence/thread-store.js";
 import type { ModelRouter } from "../model/model-router.js";
+import type { ModelAdapter } from "../model/model-adapter.js";
 import type { SkillLoader } from "../skills/skill-loader.js";
 import type { SkillEngine } from "../skills/skill-engine.js";
-import { AgentPlanSchema, PreparedSkillExecutionSchema } from "../skills/types.js";
+import {
+  AgentPlanSchema,
+  PreparedSkillExecutionSchema,
+  type AgentPlan,
+  type SkillSummary
+} from "../skills/types.js";
 import { AgentGraphInputSchema, AgentState, HumanDecisionSchema } from "./state.js";
 import type { AgentGraphInput, AgentStateValue, HumanDecision } from "./state.js";
 
@@ -104,27 +110,73 @@ export class AgentWorkflow {
         .map((message) => `${message.role}: ${message.content}`)
         .join("\n");
 
-      const plan = await model.invokeJson(
-        [
-          new SystemMessage(
-            [
-              "You are the planner for a commercial web Agent framework.",
-              "Select only the skills needed for the user task.",
-              "Return directAnswer=true only when no skill or tool is needed.",
-              "For each selected skill choose mode=parallel only if it is independent from the others.",
-              `Available skills:\n${skillContext || "(none)"}`
-            ].join("\n")
-          ),
-          new HumanMessage(
-            JSON.stringify({
-              userMessage: state.message,
-              recentHistory: history
-            })
-          )
-        ],
-        AgentPlanSchema,
-        { operation: "agent_plan" }
+      // There is nothing to plan when no SKILL.md is installed. Skipping this
+      // extra structured model call makes ordinary chat use one model request
+      // and avoids timing out a planner that has no available capabilities.
+      if (summaries.length === 0) {
+        emitSseEvent("state_update", {
+          requestId: context.requestId,
+          threadId: context.threadId,
+          userId: context.userId,
+          data: {
+            status: "planning_skipped",
+            node: "planner",
+            detail: { reason: "no_skills_available" }
+          }
+        });
+        this.logger.info(
+          {
+            requestId: state.requestId,
+            threadId: state.threadId,
+            userId: state.userId
+          },
+          "agent_planner_skipped_no_skills"
+        );
+        return {
+          plan: AgentPlanSchema.parse({ directAnswer: true }),
+          skillContext,
+          status: "planned"
+        };
+      }
+
+      // An explicit skill name or its declared trigger is enough to create a
+      // bounded, schema-validated plan. This avoids paying for a planner call
+      // before an obvious file/network action, while still letting the model
+      // choose skills for normal natural-language requests.
+      const matchedSkills = await this.skillLoader.findMatches(state.message);
+      const plan = matchedSkills.length > 0
+        ? this.createMatchedSkillPlan(matchedSkills, state.message)
+        : await this.createModelPlan({
+            model,
+            state,
+            history,
+            skillContext
+          });
+
+      if (matchedSkills.length > 0) {
+        emitSseEvent("state_update", {
+          requestId: context.requestId,
+          threadId: context.threadId,
+          userId: context.userId,
+          data: {
+            status: "planning_deterministic",
+            node: "planner",
+            detail: { skillNames: matchedSkills.map((skill) => skill.name) }
+          }
+        });
+      }
+
+      const availableSkillNames = new Set(
+        summaries.map((summary) => summary.name)
       );
+      const unknownSkillNames = plan.skills
+        .map((skill) => skill.skillName)
+        .filter((skillName) => !availableSkillNames.has(skillName));
+      if (unknownSkillNames.length > 0) {
+        throw new AppError("MODEL_ERROR", "Planner selected unknown skills", {
+          details: { unknownSkillNames }
+        });
+      }
 
       this.logger.info(
         {
@@ -279,9 +331,10 @@ export class AgentWorkflow {
       const user = new HumanMessage(
         JSON.stringify({
           userMessage: state.message,
-          plannerResponse: state.plan?.response,
-          skillResults: state.skillResults,
-          recentHistory: state.history.map((item) => ({
+            plannerResponse: state.plan?.response,
+            skillResults: state.skillResults,
+            longTermMemorySummary: state.longTermMemory || undefined,
+            recentHistory: state.history.map((item) => ({
             role: item.role,
             content: item.content
           }))
@@ -378,6 +431,98 @@ export class AgentWorkflow {
       .addEdge("execute_skills", "finalize")
       .addEdge("finalize", END)
       .compile({ checkpointer, name: "commercial-web-agent" });
+  }
+
+  private async createModelPlan(input: {
+    model: ModelAdapter;
+    state: AgentStateValue;
+    history: string;
+    skillContext: string;
+  }): Promise<AgentPlan> {
+    try {
+      return await input.model.invokeJson(
+        [
+          new SystemMessage(
+            [
+              "You are the planner for a commercial web Agent framework.",
+              "Select only the skills needed for the user task.",
+              "Return directAnswer=true only when no skill or tool is needed.",
+              "For each selected skill choose mode=parallel only if it is independent from the others.",
+              "Preserve dependency order in the skills array.",
+              'Return JSON shaped exactly as: {"response":"optional direct guidance","directAnswer":false,"skills":[{"skillName":"available-name","reason":"why needed","mode":"serial|parallel","input":"specific task for this skill"}]}.',
+              `Available skills:\n${input.skillContext || "(none)"}`
+            ].join("\n")
+          ),
+          new HumanMessage(
+            JSON.stringify({
+              userMessage: input.state.message,
+              recentHistory: input.history,
+              longTermMemory: input.state.longTermMemory || undefined
+            })
+          )
+        ],
+        AgentPlanSchema,
+        {
+          operation: "agent_plan",
+          timeoutMs: this.env.PLANNER_TIMEOUT_MS
+        }
+      );
+    } catch (error) {
+      if (
+        !this.env.SKILL_PLANNER_FALLBACK_ENABLED ||
+        !(error instanceof AppError) ||
+        error.code !== "MODEL_TIMEOUT"
+      ) {
+        throw error;
+      }
+
+      const matches = await this.skillLoader.findMatches(input.state.message);
+      const context = getRuntimeContext();
+      emitSseEvent("state_update", {
+        requestId: context.requestId,
+        threadId: context.threadId,
+        userId: context.userId,
+        data: {
+          status: "planning_fallback",
+          node: "planner",
+          detail: {
+            reason: "model_timeout",
+            skillNames: matches.map((skill) => skill.name)
+          }
+        }
+      });
+      this.logger.warn(
+        {
+          requestId: input.state.requestId,
+          threadId: input.state.threadId,
+          userId: input.state.userId,
+          skillNames: matches.map((skill) => skill.name)
+        },
+        "agent_planner_timeout_fallback"
+      );
+
+      return matches.length > 0
+        ? this.createMatchedSkillPlan(matches, input.state.message)
+        : AgentPlanSchema.parse({ directAnswer: true });
+    }
+  }
+
+  private createMatchedSkillPlan(
+    skills: SkillSummary[],
+    message: string
+  ): AgentPlan {
+    const mode = /\bparallel\b|\u5e76\u884c|\u540c\u65f6|\u72ec\u7acb/i.test(message)
+      ? "parallel"
+      : "serial";
+    return AgentPlanSchema.parse({
+      directAnswer: false,
+      skills: skills.map((skill) => ({
+        skillName: skill.name,
+        reason: "Selected from the user's explicit skill or tool request.",
+        mode,
+        input: message
+      }))
+    });
   }
 
   private applyConfirmationOverrides(

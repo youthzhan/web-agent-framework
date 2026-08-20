@@ -64,6 +64,40 @@ export class SkillLoader {
     return [...this.summaries.values()];
   }
 
+  /**
+   * Returns skills that can be safely selected without an LLM planner. This
+   * handles explicit skill requests and planner timeout fallback while the
+   * normal path still uses model-based dynamic routing.
+   */
+  async findMatches(input: string): Promise<SkillSummary[]> {
+    await this.initialize();
+    const normalizedInput = input.toLocaleLowerCase();
+    const scored = [...this.summaries.values()]
+      .map((summary) => {
+        const nameMatch = normalizedInput.includes(summary.name.toLocaleLowerCase());
+        const triggerMatches = summary.triggers.filter((trigger) =>
+          normalizedInput.includes(trigger.toLocaleLowerCase())
+        ).length;
+        return {
+          summary,
+          score: nameMatch ? 100 : triggerMatches * 10,
+          nameMatch,
+          triggerMatches
+        };
+      })
+      .filter((item) => item.nameMatch || item.triggerMatches > 0)
+      .sort((left, right) => right.score - left.score);
+
+    const explicit = scored.filter((item) => item.nameMatch);
+    if (explicit.length > 0) {
+      return explicit.map((item) => item.summary);
+    }
+    return scored
+      .filter((item) => item.triggerMatches > 0)
+      .slice(0, 3)
+      .map((item) => item.summary);
+  }
+
   async load(skillName: string): Promise<LoadedSkill> {
     await this.initialize();
     const summary = this.summaries.get(skillName);
@@ -110,14 +144,20 @@ export class SkillLoader {
       const { frontmatter } = parseSkillDocument(content);
       const normalized = SkillFrontmatterSchema.parse({
         ...frontmatter,
+        // DeepAgents currently returns the standard name/description/path
+        // fields but not this application's tool ACL metadata. Keep the YAML
+        // `allowedTools` value authoritative so a missing optional field can
+        // never silently widen or remove a skill's tool permissions.
         ...(parsedByDeepAgents
           ? {
               name: parsedByDeepAgents.name,
               description: parsedByDeepAgents.description,
-              allowedTools: parsedByDeepAgents.allowedTools,
-              compatibility: parsedByDeepAgents.compatibility,
-              license: parsedByDeepAgents.license,
-              metadata: parsedByDeepAgents.metadata
+              allowedTools: frontmatter.allowedTools,
+              triggers: frontmatter.triggers,
+              compatibility:
+                parsedByDeepAgents.compatibility ?? frontmatter.compatibility,
+              license: parsedByDeepAgents.license ?? frontmatter.license,
+              metadata: parsedByDeepAgents.metadata ?? frontmatter.metadata
             }
           : {})
       });

@@ -9,6 +9,11 @@ const emptyToUndefined = (value: unknown) => {
   return value;
 };
 
+const BooleanEnvSchema = z
+  .enum(["true", "false"])
+  .default("true")
+  .transform((value) => value === "true");
+
 const EnvSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -43,11 +48,33 @@ const EnvSchema = z.object({
   ANTHROPIC_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
   ANTHROPIC_MODEL: z.string().default("claude-3-5-sonnet-latest"),
   MODEL_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  PLANNER_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
+  SKILL_PLAN_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  SKILL_PLANNER_FALLBACK_ENABLED: BooleanEnvSchema,
+  SKILL_TOOL_PLAN_FALLBACK_ENABLED: BooleanEnvSchema,
   MODEL_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
 
   AGENT_RECURSION_LIMIT: z.coerce.number().int().min(3).max(100).default(25),
   AGENT_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   HISTORY_WINDOW_MESSAGES: z.coerce.number().int().min(2).max(50).default(16),
+  MEMORY_SUMMARY_ENABLED: BooleanEnvSchema,
+  MEMORY_SUMMARY_TRIGGER_MESSAGES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(8),
+  MEMORY_SUMMARY_MAX_CHARS: z.coerce
+    .number()
+    .int()
+    .min(500)
+    .max(20_000)
+    .default(6_000),
+  MEMORY_SUMMARY_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(20_000),
 
   SANDBOX_ROOT: z.string().default("./sandbox"),
   MAX_FILE_READ_BYTES: z.coerce.number().int().positive().default(262_144),

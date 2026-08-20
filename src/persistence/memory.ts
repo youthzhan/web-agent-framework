@@ -29,6 +29,10 @@ export class MemoryPersistenceStore implements PersistenceStore {
     return list.length;
   }
 
+  async llen(key: string): Promise<number> {
+    return (this.lists.get(key) ?? []).length;
+  }
+
   async expire(_key: string, _ttlSeconds: number): Promise<1> {
     return 1;
   }
