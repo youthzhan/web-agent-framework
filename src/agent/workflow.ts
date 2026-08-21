@@ -20,13 +20,19 @@ import type { ModelAdapter } from "../model/model-adapter.js";
 import type { SkillLoader } from "../skills/skill-loader.js";
 import type { SkillEngine } from "../skills/skill-engine.js";
 import {
+  createSerialFallbackPlan,
+  routeSkillConversation,
+  type SkillRoutingDecision
+} from "../skills/routing.js";
+import {
   AgentPlanSchema,
   PreparedSkillExecutionSchema,
   type AgentPlan,
-  type SkillSummary
+  type SkillMatch
 } from "../skills/types.js";
 import { AgentGraphInputSchema, AgentState, HumanDecisionSchema } from "./state.js";
 import type { AgentGraphInput, AgentStateValue, HumanDecision } from "./state.js";
+import type { HumanConfirmationRecord } from "../schemas/human-confirmation.js";
 
 type CompiledAgentGraph = ReturnType<AgentWorkflow["compile"]>;
 
@@ -51,7 +57,15 @@ export class AgentWorkflow {
     return await this.graph.stream(
       {
         ...parsed,
-        status: "running"
+        status: "running",
+        plan: undefined,
+        preparedSkills: [],
+        pendingConfirmation: undefined,
+        approvalDecision: undefined,
+        approvalDecisions: [],
+        skillResults: [],
+        finalOutput: "",
+        error: undefined
       },
       this.graphConfig(parsed.threadId)
     );
@@ -139,32 +153,37 @@ export class AgentWorkflow {
         };
       }
 
-      // An explicit skill name or its declared trigger is enough to create a
-      // bounded, schema-validated plan. This avoids paying for a planner call
-      // before an obvious file/network action, while still letting the model
-      // choose skills for normal natural-language requests.
-      const matchedSkills = await this.skillLoader.findMatches(state.message);
-      const plan = matchedSkills.length > 0
-        ? this.createMatchedSkillPlan(matchedSkills, state.message)
+      const matches = await this.skillLoader.findMatchDetails(state.message);
+      const routing = routeSkillConversation(state.message, matches);
+      const plan = routing.plan
+        ? routing.plan
         : await this.createModelPlan({
             model,
             state,
             history,
-            skillContext
+            skillContext,
+            routing
           });
 
-      if (matchedSkills.length > 0) {
-        emitSseEvent("state_update", {
-          requestId: context.requestId,
-          threadId: context.threadId,
-          userId: context.userId,
-          data: {
-            status: "planning_deterministic",
-            node: "planner",
-            detail: { skillNames: matchedSkills.map((skill) => skill.name) }
+      emitSseEvent("state_update", {
+        requestId: context.requestId,
+        threadId: context.threadId,
+        userId: context.userId,
+        data: {
+          status: routing.plan
+            ? "planning_deterministic"
+            : "planning_dynamic",
+          node: "planner",
+          detail: {
+            source: routing.source,
+            scheduling: routing.scheduling,
+            skills: plan.skills.map((skill) => ({
+              skillName: skill.skillName,
+              mode: skill.mode
+            }))
           }
-        });
-      }
+        }
+      });
 
       const availableSkillNames = new Set(
         summaries.map((summary) => summary.name)
@@ -183,7 +202,12 @@ export class AgentWorkflow {
           requestId: state.requestId,
           threadId: state.threadId,
           userId: state.userId,
-          selectedSkills: plan.skills.map((skill) => skill.skillName)
+          routingSource: routing.source,
+          scheduling: routing.scheduling,
+          selectedSkills: plan.skills.map((skill) => ({
+            skillName: skill.skillName,
+            mode: skill.mode
+          }))
         },
         "agent_plan_completed"
       );
@@ -228,10 +252,15 @@ export class AgentWorkflow {
     };
 
     const humanConfirmNode = async (state: AgentStateValue) => {
+      const confirmations = this.collectConfirmations(state.preparedSkills);
+      const decidedIds = new Set(
+        state.approvalDecisions.map((decision) => decision.confirmationId)
+      );
       const pending =
         state.pendingConfirmation ??
-        state.preparedSkills.find((skill) => skill.requiresConfirmation)
-          ?.confirmation;
+        confirmations.find(
+          (confirmation) => !decidedIds.has(confirmation.confirmationId)
+        );
       if (!pending) {
         return { status: "tools_ready" };
       }
@@ -243,9 +272,32 @@ export class AgentWorkflow {
       if (parsed.confirmationId !== pending.confirmationId) {
         throw new Error("Human confirmation id does not match pending state");
       }
+      const approvalDecisions = [
+        ...state.approvalDecisions.filter(
+          (decision) => decision.confirmationId !== parsed.confirmationId
+        ),
+        parsed
+      ];
+      const completedIds = new Set(
+        approvalDecisions.map((decision) => decision.confirmationId)
+      );
+      const nextConfirmation = parsed.approved
+        ? confirmations.find(
+            (confirmation) => !completedIds.has(confirmation.confirmationId)
+          )
+        : undefined;
+      if (nextConfirmation) {
+        await this.skillEngine.activateConfirmation(nextConfirmation);
+      }
       return {
         approvalDecision: parsed,
-        status: parsed.approved ? "human_approved" : "human_rejected"
+        approvalDecisions,
+        pendingConfirmation: nextConfirmation,
+        status: !parsed.approved
+          ? "human_rejected"
+          : nextConfirmation
+            ? "waiting_human_confirm"
+            : "human_approved"
       };
     };
 
@@ -264,12 +316,24 @@ export class AgentWorkflow {
 
       const preparedSkills = this.applyConfirmationOverrides(
         state.preparedSkills,
-        state.approvalDecision,
-        state.pendingConfirmation
+        state.approvalDecisions
       );
-      if (state.approvalDecision?.approved) {
+      if (state.approvalDecisions.length > 0) {
         await this.threadStore.clearPendingConfirmation(state.threadId);
       }
+
+      const approvedConfirmationIds = new Set(
+        state.approvalDecisions
+          .filter((decision) => decision.approved)
+          .map((decision) => decision.confirmationId)
+      );
+      const approvedHighRiskToolCallIds = this.collectConfirmations(
+        state.preparedSkills
+      )
+        .filter((confirmation) =>
+          approvedConfirmationIds.has(confirmation.confirmationId)
+        )
+        .map((confirmation) => confirmation.toolCallId);
 
       const model = this.modelRouter.create({
         provider: state.modelProvider,
@@ -278,7 +342,7 @@ export class AgentWorkflow {
       const skillResults = await this.skillEngine.executeManyPrepared(
         preparedSkills,
         model,
-        { allowHighRisk: state.approvalDecision?.approved === true }
+        { approvedHighRiskToolCallIds }
       );
 
       return {
@@ -324,6 +388,7 @@ export class AgentWorkflow {
         [
           "You are the final response node of a web Agent.",
           "Answer the user in the same language they used.",
+          "Format the response as standard Markdown. Do not wrap the entire response in a code fence.",
           "Use skill results as evidence. Do not invent tool results.",
           "Keep the answer concise and useful."
         ].join("\n")
@@ -426,7 +491,11 @@ export class AgentWorkflow {
           : "execute_skills"
       )
       .addConditionalEdges("human_confirm", (state) =>
-        state.approvalDecision?.approved ? "execute_skills" : "finalize"
+        !state.approvalDecision?.approved
+          ? "finalize"
+          : state.pendingConfirmation
+            ? "human_confirm"
+            : "execute_skills"
       )
       .addEdge("execute_skills", "finalize")
       .addEdge("finalize", END)
@@ -438,9 +507,10 @@ export class AgentWorkflow {
     state: AgentStateValue;
     history: string;
     skillContext: string;
+    routing: SkillRoutingDecision;
   }): Promise<AgentPlan> {
     try {
-      return await input.model.invokeJson(
+      const modelPlan = await input.model.invokeJson(
         [
           new SystemMessage(
             [
@@ -449,6 +519,9 @@ export class AgentWorkflow {
               "Return directAnswer=true only when no skill or tool is needed.",
               "For each selected skill choose mode=parallel only if it is independent from the others.",
               "Preserve dependency order in the skills array.",
+              input.routing.matches.length > 0
+                ? `Matched Skill candidates: ${input.routing.matches.map((match) => match.summary.name).join(", ")}. Directly named Skills must all be included; intent matches may be omitted when irrelevant.`
+                : "No deterministic Skill candidate was found; decide from the full catalog.",
               'Return JSON shaped exactly as: {"response":"optional direct guidance","directAnswer":false,"skills":[{"skillName":"available-name","reason":"why needed","mode":"serial|parallel","input":"specific task for this skill"}]}.',
               `Available skills:\n${input.skillContext || "(none)"}`
             ].join("\n")
@@ -467,16 +540,23 @@ export class AgentWorkflow {
           timeoutMs: this.env.PLANNER_TIMEOUT_MS
         }
       );
+      return this.preserveExplicitSkills(
+        modelPlan,
+        input.routing.matches,
+        input.state.message
+      );
     } catch (error) {
       if (
         !this.env.SKILL_PLANNER_FALLBACK_ENABLED ||
         !(error instanceof AppError) ||
-        error.code !== "MODEL_TIMEOUT"
+        !isRecoverablePlannerError(error)
       ) {
         throw error;
       }
 
-      const matches = await this.skillLoader.findMatches(input.state.message);
+      const matches = input.routing.matches.length > 0
+        ? input.routing.matches
+        : await this.skillLoader.findMatchDetails(input.state.message);
       const context = getRuntimeContext();
       emitSseEvent("state_update", {
         requestId: context.requestId,
@@ -486,8 +566,12 @@ export class AgentWorkflow {
           status: "planning_fallback",
           node: "planner",
           detail: {
-            reason: "model_timeout",
-            skillNames: matches.map((skill) => skill.name)
+            reason:
+              error.code === "MODEL_TIMEOUT"
+                ? "model_timeout"
+                : "invalid_model_response",
+            skillNames: matches.map((match) => match.summary.name),
+            mode: "serial"
           }
         }
       });
@@ -496,59 +580,97 @@ export class AgentWorkflow {
           requestId: input.state.requestId,
           threadId: input.state.threadId,
           userId: input.state.userId,
-          skillNames: matches.map((skill) => skill.name)
+          skillNames: matches.map((match) => match.summary.name),
+          fallbackReason: error.code
         },
-        "agent_planner_timeout_fallback"
+        "agent_planner_fallback"
       );
 
       return matches.length > 0
-        ? this.createMatchedSkillPlan(matches, input.state.message)
+        ? createSerialFallbackPlan(input.state.message, matches)
         : AgentPlanSchema.parse({ directAnswer: true });
     }
   }
 
-  private createMatchedSkillPlan(
-    skills: SkillSummary[],
+  private preserveExplicitSkills(
+    modelPlan: AgentPlan,
+    matches: SkillMatch[],
     message: string
   ): AgentPlan {
-    const mode = /\bparallel\b|\u5e76\u884c|\u540c\u65f6|\u72ec\u7acb/i.test(message)
-      ? "parallel"
-      : "serial";
+    const explicit = matches.filter((match) => match.source === "explicit");
+    if (explicit.length === 0) {
+      return modelPlan;
+    }
+    const plannedNames = new Set(
+      modelPlan.skills.map((skill) => skill.skillName)
+    );
     return AgentPlanSchema.parse({
+      response: modelPlan.response,
       directAnswer: false,
-      skills: skills.map((skill) => ({
-        skillName: skill.name,
-        reason: "Selected from the user's explicit skill or tool request.",
-        mode,
-        input: message
-      }))
+      skills: [
+        ...modelPlan.skills,
+        ...explicit
+          .filter((match) => !plannedNames.has(match.summary.name))
+          .map((match) => ({
+            skillName: match.summary.name,
+            reason: "用户直接指定了该 Skill；模型未返回该项，已按安全串行模式补全。",
+            mode: "serial" as const,
+            input: message
+          }))
+      ]
     });
   }
 
   private applyConfirmationOverrides(
     preparedSkills: AgentStateValue["preparedSkills"],
-    decision: HumanDecision | undefined,
-    pendingConfirmation: AgentStateValue["pendingConfirmation"]
+    decisions: HumanDecision[]
   ): AgentStateValue["preparedSkills"] {
-    if (!decision?.approved || decision.argsOverride === undefined) {
+    const overrides = new Map(
+      decisions
+        .filter(
+          (decision) => decision.approved && decision.argsOverride !== undefined
+        )
+        .map((decision) => [decision.confirmationId, decision.argsOverride])
+    );
+    if (overrides.size === 0) {
       return preparedSkills;
     }
-    const targetToolCallId =
-      pendingConfirmation?.toolCallId ?? decision.confirmationId.split(":").at(-1);
     return preparedSkills.map((prepared) =>
       PreparedSkillExecutionSchema.parse({
         ...prepared,
         toolPlan: {
           ...prepared.toolPlan,
-          calls: prepared.toolPlan.calls.map((call) =>
-            call.toolCallId === targetToolCallId
-              ? { ...call, args: decision.argsOverride }
-              : call
-          )
+          calls: prepared.toolPlan.calls.map((call) => {
+            const confirmation = this.collectConfirmations([prepared]).find(
+              (item) => item.toolCallId === call.toolCallId
+            );
+            const argsOverride = confirmation
+              ? overrides.get(confirmation.confirmationId)
+              : undefined;
+            return argsOverride === undefined
+              ? call
+              : { ...call, args: argsOverride };
+          })
         }
       })
     );
   }
+
+  private collectConfirmations(
+    preparedSkills: AgentStateValue["preparedSkills"]
+  ): HumanConfirmationRecord[] {
+    return preparedSkills.flatMap((prepared) =>
+      (prepared.confirmations ?? []).length > 0
+        ? (prepared.confirmations ?? [])
+        : prepared.confirmation
+          ? [prepared.confirmation]
+          : []
+    );
+  }
+}
+
+export function isRecoverablePlannerError(error: AppError): boolean {
+  return error.code === "MODEL_TIMEOUT" || error.code === "MODEL_ERROR";
 }
 
 function hasFailedStatus(value: unknown): boolean {

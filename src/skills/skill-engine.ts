@@ -56,12 +56,14 @@ export class SkillEngine {
 
     const allowedTools = skill.allowedToolsList;
     const toolNames = allowedTools.length > 0 ? allowedTools.join(", ") : "none";
-    const toolPlan = await this.createToolPlan({
-      skill,
-      plan,
-      model,
-      toolNames
-    });
+    const toolPlan = this.deduplicateToolPlan(
+      await this.createToolPlan({
+        skill,
+        plan,
+        model,
+        toolNames
+      })
+    );
 
     for (const call of toolPlan.calls) {
       if (!allowedTools.includes(call.toolName)) {
@@ -75,24 +77,10 @@ export class SkillEngine {
       const tool = this.registry.getRequired(call.toolName);
       return tool.risk !== "low";
     });
-    if (highRiskCalls.length > 1) {
-      throw new AppError(
-        "TOOL_ERROR",
-        `Skill ${skill.name} may request only one high-risk tool call per approval step`,
-        {
-          statusCode: 409,
-          details: {
-            toolCallIds: highRiskCalls.map((call) => call.toolCallId)
-          }
-        }
-      );
-    }
-    const highRiskCall = highRiskCalls[0];
-
-    if (highRiskCall) {
+    const confirmations = highRiskCalls.map((highRiskCall) => {
       const tool = this.registry.getRequired(highRiskCall.toolName);
       const args = tool.argsSchema.parse(highRiskCall.args);
-      const confirmation = HumanConfirmationRecordSchema.parse({
+      return HumanConfirmationRecordSchema.parse({
         confirmationId: `${skill.name}:${highRiskCall.toolCallId}`,
         threadId: context.threadId,
         userId: context.userId,
@@ -104,6 +92,10 @@ export class SkillEngine {
         reason: `Skill ${skill.name} wants to execute ${tool.risk}-risk tool ${tool.name}`,
         createdAt: new Date().toISOString()
       });
+    });
+    const confirmation = confirmations[0];
+
+    if (confirmation) {
       return {
         skill,
         input: plan.input,
@@ -111,7 +103,8 @@ export class SkillEngine {
         reason: plan.reason,
         toolPlan,
         requiresConfirmation: true,
-        confirmation
+        confirmation,
+        confirmations
       };
     }
 
@@ -121,14 +114,15 @@ export class SkillEngine {
       mode: plan.mode,
       reason: plan.reason,
       toolPlan,
-      requiresConfirmation: false
+      requiresConfirmation: false,
+      confirmations: []
     };
   }
 
   async executePrepared(
     prepared: PreparedSkillExecution,
     model: ModelAdapter,
-    options: { allowHighRisk: boolean }
+    options: { approvedHighRiskToolCallIds: readonly string[] }
   ): Promise<SkillExecutionResult> {
     const context = getRuntimeContext();
     emitSseEvent("state_update", {
@@ -153,7 +147,7 @@ export class SkillEngine {
         calls,
         prepared.toolPlan.mode,
         {
-          allowHighRisk: options.allowHighRisk,
+          approvedHighRiskToolCallIds: options.approvedHighRiskToolCallIds,
           skillName: prepared.skill.name,
           executionMode: prepared.toolPlan.mode
         }
@@ -199,41 +193,37 @@ export class SkillEngine {
       return await this.prepare(plan, model);
     });
     const confirmations = prepared.flatMap((item) =>
-      item.confirmation ? [item.confirmation] : []
+      item.confirmations.length > 0
+        ? item.confirmations
+        : item.confirmation
+          ? [item.confirmation]
+          : []
     );
-    if (confirmations.length > 1) {
-      throw new AppError(
-        "TOOL_ERROR",
-        "A task may request only one high-risk tool call per approval step",
-        {
-          statusCode: 409,
-          details: {
-            confirmationIds: confirmations.map((item) => item.confirmationId)
-          }
-        }
-      );
-    }
     const confirmation = confirmations[0];
     if (confirmation) {
-      const context = getRuntimeContext();
-      await this.threadStore.setPendingConfirmation(
-        context.threadId,
-        confirmation
-      );
-      emitSseEvent("need_human_confirm", {
-        requestId: context.requestId,
-        threadId: context.threadId,
-        userId: context.userId,
-        data: confirmation
-      });
+      await this.activateConfirmation(confirmation);
     }
     return prepared;
+  }
+
+  /** Persists and emits one active item from the checkpointed approval queue. */
+  async activateConfirmation(
+    confirmation: z.infer<typeof HumanConfirmationRecordSchema>
+  ): Promise<void> {
+    const context = getRuntimeContext();
+    await this.threadStore.setPendingConfirmation(context.threadId, confirmation);
+    emitSseEvent("need_human_confirm", {
+      requestId: context.requestId,
+      threadId: context.threadId,
+      userId: context.userId,
+      data: confirmation
+    });
   }
 
   async executeManyPrepared(
     prepared: PreparedSkillExecution[],
     model: ModelAdapter,
-    options: { allowHighRisk: boolean }
+    options: { approvedHighRiskToolCallIds: readonly string[] }
   ): Promise<SkillExecutionResult[]> {
     return await runByPlannedMode(prepared, async (item) => {
       return await this.executePrepared(item, model, options);
@@ -284,7 +274,7 @@ export class SkillEngine {
       if (
         !this.env.SKILL_TOOL_PLAN_FALLBACK_ENABLED ||
         !(error instanceof AppError) ||
-        error.code !== "MODEL_TIMEOUT"
+        !["MODEL_TIMEOUT", "MODEL_ERROR"].includes(error.code)
       ) {
         throw error;
       }
@@ -307,7 +297,10 @@ export class SkillEngine {
           node: "skill_engine",
           detail: {
             skillName: input.skill.name,
-            reason: "model_timeout",
+            reason:
+              error.code === "MODEL_TIMEOUT"
+                ? "model_timeout"
+                : "invalid_model_response",
             toolMode: fallback.mode,
             toolCount: fallback.calls.length
           }
@@ -319,17 +312,18 @@ export class SkillEngine {
           threadId: context.threadId,
           userId: context.userId,
           skillName: input.skill.name,
+          fallbackReason: error.code,
           toolMode: fallback.mode,
           toolCount: fallback.calls.length
         },
-        "skill_tool_plan_timeout_fallback"
+        "skill_tool_plan_fallback"
       );
       return fallback;
     }
   }
 
   /**
-   * Timeout fallback intentionally accepts only explicit, low-ambiguity
+   * Planner-failure fallback intentionally accepts only explicit, low-ambiguity
    * parameters. The normal model planner remains responsible for all other
    * tool plans, including any parameter synthesis or multi-step decisions.
    */
@@ -374,7 +368,7 @@ export class SkillEngine {
 
   private extractRelativeFilePaths(input: string): string[] {
     const matches = input.matchAll(
-      /(?:^|[\s"'\x60])((?:[A-Za-z0-9._-]+[\\/])*[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)(?=$|[\s"'\x60,.!?\u3002\uff0c])/g
+      /(?:^|[\s"'\x60:;,([\{\uFF1A\uFF1B\uFF0C\u3002\u3001\uFF08\u3010\u300A])((?:[A-Za-z0-9._-]+[\\/])*[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)(?=$|[\s"'\x60:;,.!?\uFF1A\uFF1B\uFF0C\u3002\u3001\uFF09\u3011\u300B)\]}])/g
     );
     return [...new Set(
       [...matches]
@@ -384,11 +378,34 @@ export class SkillEngine {
   }
 
   private extractHttpUrls(input: string): string[] {
-    const matches = input.matchAll(/https?:\/\/[^\s<>"']+/gi);
+    const matches = input.matchAll(
+      /https?:\/\/[^\s<>"'\u3002\u3001\uFF0C\uFF1B\uFF1A\uFF01\uFF1F\uFF09\u3011\u300B]+/gi
+    );
     return [...new Set(
       [...matches]
         .map((match) => match[0]?.replace(/[.,!?\u3002\uff0c]+$/, ""))
         .filter((url): url is string => Boolean(url))
     )].slice(0, 5);
+  }
+
+  /**
+   * Identical calls add no information and can create duplicate approvals or
+   * duplicate external side effects. Preserve the first call and its ID.
+   */
+  private deduplicateToolPlan(
+    plan: z.infer<typeof SkillToolPlanSchema>
+  ): z.infer<typeof SkillToolPlanSchema> {
+    const seen = new Set<string>();
+    return SkillToolPlanSchema.parse({
+      ...plan,
+      calls: plan.calls.filter((call) => {
+        const signature = JSON.stringify([call.toolName, call.args]);
+        if (seen.has(signature)) {
+          return false;
+        }
+        seen.add(signature);
+        return true;
+      })
+    });
   }
 }

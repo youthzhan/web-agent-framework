@@ -22,6 +22,16 @@ export const SkillSummarySchema = SkillFrontmatterSchema.extend({
 
 export type SkillSummary = z.infer<typeof SkillSummarySchema>;
 
+export const SkillMatchSchema = z.object({
+  summary: SkillSummarySchema,
+  source: z.enum(["explicit", "intent"]),
+  score: z.number().nonnegative(),
+  position: z.number().int().nonnegative(),
+  matchedTriggers: z.array(z.string()).default([])
+});
+
+export type SkillMatch = z.infer<typeof SkillMatchSchema>;
+
 export const LoadedSkillSchema = SkillSummarySchema.extend({
   instructions: z.string().min(1)
 });
@@ -55,7 +65,10 @@ export const PreparedSkillExecutionSchema = z.object({
   reason: z.string(),
   toolPlan: SkillToolPlanSchema,
   requiresConfirmation: z.boolean().default(false),
-  confirmation: HumanConfirmationRecordSchema.optional()
+  // All pending approvals live in checkpointed state. Keep the singular field
+  // for compatibility with checkpoints created before approval queues existed.
+  confirmation: HumanConfirmationRecordSchema.optional(),
+  confirmations: z.array(HumanConfirmationRecordSchema).default([])
 });
 
 export type PreparedSkillExecution = z.infer<

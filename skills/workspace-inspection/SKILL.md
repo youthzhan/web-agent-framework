@@ -1,6 +1,6 @@
 ---
 name: workspace-inspection
-description: Read and analyze text files in the configured sandbox workspace. Use for file summaries, configuration reviews, and source inspection.
+description: 读取并分析配置的沙箱工作区中的文本文件。适用于文件摘要、配置审查和源码检查。
 allowedTools: file_read
 triggers:
   - workspace
@@ -8,16 +8,16 @@ triggers:
   - file
   - file_read
   - README
-  - "\u6587\u4ef6"
-  - "\u8bfb\u53d6"
-  - "\u5de5\u4f5c\u533a"
+  - "文件"
+  - "读取"
+  - "工作区"
 ---
 
-# Workspace inspection
+# 工作区检查
 
-Use this skill only for files inside the configured sandbox directory.
+仅可将此 Skill 用于配置的沙箱目录内文件。
 
-1. Identify the smallest set of relevant relative file paths.
-2. For independent paths, create `file_read` calls with `mode: parallel`.
-3. When a later file choice depends on the content of an earlier file, choose `mode: serial` and read the prerequisite first.
-4. Summarize only facts returned by the file tools. Include the relative paths that support important conclusions.
+1. 确定最少且相关的相对文件路径集合。
+2. 路径相互独立时，创建 `mode: parallel` 的 `file_read` 调用。
+3. 后续文件选择依赖前一个文件内容时，使用 `mode: serial`，并先读取前置文件。
+4. 仅根据文件工具返回的事实进行总结，并包含支持重要结论的相对路径。

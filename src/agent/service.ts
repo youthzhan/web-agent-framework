@@ -6,6 +6,7 @@ import { withRuntimeContext } from "../common/run-context.js";
 import { withTimeout } from "../common/timeout.js";
 import type { AppEnv } from "../config/env.js";
 import type { AppLogger } from "../common/logger.js";
+import type { ModelSelection } from "../model/types.js";
 import type { MessageStore } from "../persistence/message-store.js";
 import type { ThreadStore } from "../persistence/thread-store.js";
 import type { ConversationMemoryService } from "../memory/conversation-memory-service.js";
@@ -105,13 +106,16 @@ export class AgentService {
           const stream = await withTimeout(
             async () => {
               if (input.mode === "new") {
+                const selection = this.resolveModelSelection(input.request);
                 await this.threadStore.upsert({
                   threadId: input.threadId,
                   userId: input.userId,
                   status: "running",
-                  ...(input.request.metadata
-                    ? { metadata: input.request.metadata }
-                    : {})
+                  metadata: {
+                    ...(input.request.metadata ?? {}),
+                    modelProvider: selection.provider,
+                    model: selection.model
+                  },
                 });
                 await this.messageStore.append({
                   threadId: input.threadId,
@@ -120,17 +124,10 @@ export class AgentService {
                   content: input.request.message,
                   metadata: input.request.metadata
                 });
-                const modelProvider =
-                  input.request.modelProvider ?? this.env.DEFAULT_MODEL_PROVIDER;
                 const context = await this.conversationMemory.buildContext({
                   threadId: input.threadId,
                   userId: input.userId,
-                  selection: {
-                    provider: modelProvider,
-                    ...(input.request.model
-                      ? { model: input.request.model }
-                      : {})
-                  }
+                  selection
                 });
                 return await this.workflow.streamNew(
                   AgentGraphInputSchema.parse({
@@ -140,8 +137,8 @@ export class AgentService {
                     message: input.request.message,
                     history: context.history,
                     longTermMemory: context.longTermMemory,
-                    modelProvider,
-                    model: input.request.model
+                    modelProvider: selection.provider,
+                    model: selection.model
                   })
                 );
               }
@@ -252,5 +249,38 @@ export class AgentService {
         }
       }
     );
+  }
+
+  /**
+   * Models are configured by operators, not supplied freely by browser/API
+   * clients. This prevents accidental routing to an unreviewed provider model.
+   */
+  private resolveModelSelection(request: ChatRequest): ModelSelection {
+    if (!request.model && !request.modelProvider) {
+      const defaultModel = this.env.modelCatalog[0];
+      if (!defaultModel) {
+        throw new AppError("MODEL_ERROR", "No configured model is available");
+      }
+      return {
+        provider: defaultModel.provider,
+        model: defaultModel.model
+      };
+    }
+
+    const matches = this.env.modelCatalog.filter(
+      (entry) =>
+        (request.modelProvider === undefined ||
+          entry.provider === request.modelProvider) &&
+        (request.model === undefined || entry.model === request.model)
+    );
+    const match = matches.length === 1 ? matches[0] : undefined;
+    if (!match) {
+      throw new AppError(
+        "BAD_REQUEST",
+        "Requested model is not in the configured MODEL_CATALOG",
+        { statusCode: 400 }
+      );
+    }
+    return { provider: match.provider, model: match.model };
   }
 }

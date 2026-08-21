@@ -39,11 +39,19 @@ export function normalizeError(error: unknown): AppError {
     return error;
   }
   if (error instanceof z.ZodError) {
-    return new AppError("BAD_REQUEST", "Validation failed", {
-      statusCode: 400,
-      details: error.issues,
-      cause: error
-    });
+    const summary = error.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.path.join(".") || "request"}: ${issue.message}`)
+      .join("; ");
+    return new AppError(
+      "BAD_REQUEST",
+      summary ? `Validation failed: ${summary}` : "Validation failed",
+      {
+        statusCode: 400,
+        details: error.issues,
+        cause: error
+      }
+    );
   }
   if (error instanceof Error) {
     return new AppError("UNKNOWN", error.message, { cause: error });

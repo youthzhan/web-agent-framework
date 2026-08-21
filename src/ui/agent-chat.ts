@@ -96,11 +96,11 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
       .section-label { padding: 5px 18px 8px; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; }
       .sessions { flex: 1; min-height: 0; overflow-y: auto; padding: 0 9px 12px; }
 
+      .session-row { position: relative; margin-bottom: 3px; }
       .session {
         display: block;
         width: 100%;
-        margin-bottom: 3px;
-        padding: 10px 9px;
+        padding: 10px 72px 10px 9px;
         overflow: hidden;
         border: 0;
         border-radius: 5px;
@@ -113,6 +113,12 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
       .session.active { background: var(--accent-soft); color: var(--accent-dark); }
       .session-title { display: block; overflow: hidden; font-size: 13px; font-weight: 630; text-overflow: ellipsis; white-space: nowrap; }
       .session-time { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+      .session-row.running .session-title::after { content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--accent); vertical-align: 1px; animation: pulse 1.2s ease-in-out infinite; }
+      .session-actions { position: absolute; top: 50%; right: 7px; display: flex; gap: 2px; opacity: 0; transform: translateY(-50%); transition: opacity 120ms ease; }
+      .session-row:hover .session-actions, .session-row:focus-within .session-actions { opacity: 1; }
+      .session-action { padding: 3px 4px; border: 0; color: var(--muted); background: transparent; font-size: 11px; }
+      .session-action:hover { color: var(--accent-dark); text-decoration: underline; }
+      .session-action.delete:hover { color: var(--danger); }
       .sessions-empty { padding: 18px 10px; color: var(--muted); font-size: 12px; line-height: 1.6; text-align: center; }
 
       .sidebar-footer {
@@ -175,17 +181,50 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
       .suggestion:hover { border-color: var(--line-strong); box-shadow: var(--shadow); }
       .suggestion strong { display: block; margin-bottom: 4px; font-size: 13px; }
       .suggestion span { color: var(--muted); font-size: 12px; }
+      .suggestion:last-child:nth-child(odd) { grid-column: 1 / -1; }
 
       .message { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 11px; margin: 0 0 26px; }
       .message.user { grid-template-columns: minmax(0, 1fr); justify-items: end; }
       .avatar { width: 30px; height: 30px; border-radius: 5px; font-size: 12px; }
       .message-body { min-width: 0; max-width: 100%; }
+      .message.user .message-body { width: fit-content; max-width: min(620px, 82%); }
       .message-label { margin-bottom: 7px; color: var(--muted); font-size: 11px; font-weight: 650; }
-      .message-content { font-size: 14px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
-      .message.user .message-content { max-width: min(620px, 82%); padding: 10px 14px; border-radius: 6px; color: #fff; background: #27302b; }
+      .message-content { width: 100%; font-size: 14px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; user-select: text; }
+      .message.user .message-content { width: fit-content; max-width: 100%; padding: 10px 14px; border-radius: 6px; color: #fff; background: #27302b; }
+      .message.assistant .message-content { white-space: normal; }
+      .message.assistant .message-content > :first-child { margin-top: 0; }
+      .message.assistant .message-content > :last-child { margin-bottom: 0; }
+      .message.assistant .message-content p { margin: 0 0 12px; }
+      .message.assistant .message-content h1, .message.assistant .message-content h2, .message.assistant .message-content h3, .message.assistant .message-content h4 { margin: 20px 0 9px; line-height: 1.35; letter-spacing: 0; }
+      .message.assistant .message-content h1 { font-size: 20px; }
+      .message.assistant .message-content h2 { font-size: 18px; }
+      .message.assistant .message-content h3 { font-size: 16px; }
+      .message.assistant .message-content h4 { font-size: 14px; }
+      .message.assistant .message-content ul, .message.assistant .message-content ol { margin: 8px 0 14px; padding-left: 24px; }
+      .message.assistant .message-content li { margin: 4px 0; }
+      .message.assistant .message-content blockquote { margin: 12px 0; padding: 2px 0 2px 12px; border-left: 3px solid var(--line-strong); color: var(--muted); }
+      .message.assistant .message-content code { padding: 2px 5px; border-radius: 3px; background: var(--surface-muted); font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+      .message.assistant .message-content pre { margin: 12px 0; padding: 13px 14px; overflow-x: auto; border: 1px solid var(--line); border-radius: 5px; background: #18201c; color: #edf3ef; }
+      .message.assistant .message-content pre code { padding: 0; color: inherit; background: transparent; white-space: pre; }
+      .message.assistant .message-content a { color: var(--accent-dark); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+      .message.assistant .message-content table { display: block; width: max-content; max-width: 100%; margin: 12px 0; overflow-x: auto; border-collapse: collapse; }
+      .message.assistant .message-content th, .message.assistant .message-content td { padding: 7px 9px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+      .message.assistant .message-content th { background: var(--surface-muted); font-weight: 700; }
+      .message.assistant .message-content hr { margin: 18px 0; border: 0; border-top: 1px solid var(--line); }
+      .message-actions { display: flex; align-items: center; min-height: 24px; gap: 8px; margin-top: 4px; opacity: 0; transition: opacity 120ms ease; }
+      .message.user .message-actions { justify-content: flex-end; }
+      .message:hover .message-actions, .message:focus-within .message-actions { opacity: 1; }
+      .message-action { padding: 2px 0; border: 0; color: var(--muted); background: transparent; font-size: 11px; }
+      .message-action:hover { color: var(--accent-dark); text-decoration: underline; }
       .message.error .message-content { padding: 10px 12px; border-left: 3px solid var(--danger); color: var(--danger); background: var(--danger-soft); }
       .typing::after { content: ""; display: inline-block; width: 7px; height: 15px; margin-left: 3px; vertical-align: -2px; background: var(--accent); animation: blink 0.9s steps(1) infinite; }
       @keyframes blink { 50% { opacity: 0; } }
+      .message-content.loading { display: flex; align-items: center; width: 54px; min-height: 28px; gap: 5px; }
+      .message-content.loading::before, .message-content.loading::after { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: loading-dot 1.2s ease-in-out infinite; }
+      .message-content.loading::after { animation-delay: 0.3s; }
+      .message-content.loading span.loading-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: loading-dot 1.2s 0.15s ease-in-out infinite; }
+      @keyframes loading-dot { 0%, 60%, 100% { opacity: 0.28; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+      @keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 
       .approval-notice { margin: -8px 0 24px 43px; padding: 12px 14px; border: 1px solid #eccb99; border-radius: 6px; background: var(--warning-soft); color: #714a13; font-size: 13px; line-height: 1.5; }
       .approval-notice button { margin-top: 9px; border: 0; padding: 0; color: var(--warning); background: transparent; font-size: 12px; font-weight: 700; }
@@ -260,9 +299,11 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         .welcome { padding-top: 8vh; }
         .welcome h1 { font-size: 25px; }
         .suggestions { grid-template-columns: 1fr; }
+        .suggestion:last-child:nth-child(odd) { grid-column: auto; }
         .composer-wrap { padding: 10px 10px 12px; }
         .composer-hint { display: none; }
-        .message.user .message-content { max-width: 90%; }
+        .message.user .message-body { max-width: 90%; }
+        .session-actions, .message-actions { opacity: 1; }
         .status-line span { display: none; }
       }
     </style>
@@ -277,7 +318,7 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         <button id="newChat" class="new-chat" type="button"><span>+</span><span>新对话</span></button>
         <div class="section-label">最近会话</div>
         <div id="sessions" class="sessions"></div>
-        <div class="sidebar-footer">会话列表保存在当前浏览器。服务端会话状态由当前持久化后端管理。</div>
+        <div class="sidebar-footer">会话列表和自定义标题保存在当前浏览器。会话状态、消息、记忆摘要与任务断点持久化在 Redis。</div>
       </aside>
 
       <main id="conversation" class="conversation">
@@ -300,12 +341,13 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
             <div id="welcome" class="welcome">
               <div class="welcome-mark">A</div>
               <h1>今天需要 Agent 帮你完成什么？</h1>
-              <p>可以直接对话，也可以让 Agent 选择 Skill、调用工具并在高风险操作前等待你的确认。</p>
+              <p>像描述真实任务一样提出需求，Agent 会自行选择 Skill、安排步骤并调用工具。</p>
               <div class="suggestions">
-                <button class="suggestion" type="button" data-prompt="读取 sandbox 目录下的 README.md，并总结主要内容"><strong>分析工作区文件</strong><span>使用带沙盒限制的文件读取工具</span></button>
-                <button class="suggestion" type="button" data-prompt="请列出当前可用的技能，并说明各自适用场景"><strong>查看可用技能</strong><span>了解渐进加载的 Skill 能力</span></button>
-                <button class="suggestion" type="button" data-prompt="访问 https://api.github.com 并概括响应信息"><strong>调用 HTTP 工具</strong><span>观察工具参数、执行结果与审批</span></button>
-                <button class="suggestion" type="button" data-prompt="请制定一个分步骤执行的任务计划，并说明哪些步骤可以并行"><strong>规划复杂任务</strong><span>体验串行与并行执行决策</span></button>
+                <button class="suggestion" type="button" data-prompt="请让 workspace-inspection 帮我阅读 README.md，并整理出项目的主要用途和安全限制"><strong>检查项目说明</strong><span>指定工作区检查能力完成任务</span></button>
+                <button class="suggestion" type="button" data-prompt="帮我阅读 README.md，用三点总结这个项目的主要内容"><strong>快速了解项目</strong><span>Agent 根据需求自动选择合适能力</span></button>
+                <button class="suggestion" type="button" data-prompt="先阅读 README.md，了解项目的文件访问限制；然后访问 https://jsonplaceholder.typicode.com/todos/1，核对该公开 API 请求是否符合这些限制"><strong>核对内外资料</strong><span>后一项工作基于前一项的结论</span></button>
+                <button class="suggestion" type="button" data-prompt="我正在整理两份互不依赖的资料：README.md 和 https://jsonplaceholder.typicode.com/todos/1。请同时收集它们的内容，最后统一汇总"><strong>同步收集资料</strong><span>独立的信息收集任务可以同时推进</span></button>
+                <button class="suggestion" type="button" data-prompt="请综合分析 README.md 与 https://jsonplaceholder.typicode.com/todos/1 的内容，说明项目文档和公开 API 数据各自的用途，并自行安排最合适的执行顺序"><strong>完成综合调研</strong><span>Agent 根据实际依赖自行安排执行步骤</span></button>
               </div>
             </div>
           </div>
@@ -342,11 +384,7 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
           <section class="inspector-section">
             <h3>模型设置</h3>
             <div class="field"><label for="userId">用户 ID</label><input id="userId" value="demo-user" autocomplete="off" /></div>
-            <div class="field">
-              <label for="provider">模型提供商</label>
-              <select id="provider"><option value="">服务端默认</option><option value="openai">OpenAI</option><option value="openai-compatible">OpenAI Compatible</option><option value="anthropic">Anthropic</option></select>
-            </div>
-            <div class="field"><label for="model">模型名称</label><input id="model" placeholder="服务端默认模型" autocomplete="off" /></div>
+            <div class="field"><label for="modelPreset">对话模型</label><select id="modelPreset" disabled><option value="">加载已配置模型...</option></select></div>
             <div class="field"><label for="apiKey">服务 API Key</label><input id="apiKey" type="password" placeholder="启用 AUTH_API_KEY 时填写" autocomplete="off" /></div>
           </section>
 
@@ -364,15 +402,20 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
     </div>
     <div id="scrim" class="scrim"></div>
 
+    <script src="/assets/marked.umd.js"></script>
+    <script src="/assets/purify.min.js"></script>
     <script>
       const byId = (id) => document.getElementById(id);
       const storageKey = "web-agent-framework:sessions";
       let threadId = "";
-      let activeController = null;
       let activeConfirmation = null;
-      let activeAssistantContent = null;
       let isRunning = false;
+      let viewId = crypto.randomUUID();
+      let loadingThreadId = "";
+      const runs = new Map();
+      const draftRuns = new Map();
       let sessions = readSessions();
+      let configuredModels = [];
 
       function readSessions() {
         try {
@@ -403,9 +446,13 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
           return;
         }
         sessions.forEach((session) => {
+          const row = document.createElement("div");
+          const sessionRun = runs.get(session.threadId);
+          row.className = "session-row" + (sessionRun?.running ? " running" : "");
           const button = document.createElement("button");
           button.type = "button";
           button.className = "session" + (session.threadId === threadId ? " active" : "");
+          button.title = session.title || "未命名对话";
           const title = document.createElement("span");
           title.className = "session-title";
           title.textContent = session.title || "未命名对话";
@@ -414,7 +461,24 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
           time.textContent = formatTime(session.updatedAt);
           button.append(title, time);
           button.addEventListener("click", () => loadThread(session.threadId));
-          root.appendChild(button);
+
+          const actions = document.createElement("div");
+          actions.className = "session-actions";
+          const rename = document.createElement("button");
+          rename.type = "button";
+          rename.className = "session-action";
+          rename.textContent = "编辑";
+          rename.title = "编辑会话标题";
+          rename.addEventListener("click", () => renameSession(session.threadId));
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.className = "session-action delete";
+          remove.textContent = "删除";
+          remove.title = "从最近会话中删除";
+          remove.addEventListener("click", () => deleteSession(session.threadId));
+          actions.append(rename, remove);
+          row.append(button, actions);
+          root.appendChild(row);
         });
       }
 
@@ -428,13 +492,35 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         sessions = [record].concat(sessions.filter((item) => item.threadId !== id));
         saveSessions();
         renderSessions();
-        byId("chatTitle").textContent = record.title;
+        if (threadId === id) byId("chatTitle").textContent = record.title;
       }
 
       function forgetSession(id) {
         sessions = sessions.filter((session) => session.threadId !== id);
         saveSessions();
         renderSessions();
+      }
+
+      function renameSession(id) {
+        const session = sessions.find((item) => item.threadId === id);
+        if (!session) return;
+        const nextTitle = window.prompt("编辑会话标题", session.title || "未命名对话");
+        if (nextTitle === null) return;
+        const normalized = nextTitle.trim().slice(0, 60);
+        if (!normalized) return;
+        session.title = normalized;
+        session.updatedAt = new Date().toISOString();
+        saveSessions();
+        renderSessions();
+        if (threadId === id) byId("chatTitle").textContent = normalized;
+      }
+
+      function deleteSession(id) {
+        const session = sessions.find((item) => item.threadId === id);
+        if (!session) return;
+        if (!window.confirm("确定从最近会话中删除“" + (session.title || "未命名对话") + "”吗？")) return;
+        forgetSession(id);
+        if (threadId === id) startNewChat();
       }
 
       function getHeaders(acceptJson) {
@@ -444,12 +530,95 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         return headers;
       }
 
+      function getModelSelection() {
+        const selectedId = byId("modelPreset").value;
+        const selected = configuredModels.find((model) => model.id === selectedId);
+        return selected ? { modelProvider: selected.provider, model: selected.model } : {};
+      }
+
+      async function loadConfiguredModels() {
+        const select = byId("modelPreset");
+        try {
+          const response = await fetch("/v1/models", { headers: getHeaders(true) });
+          if (!response.ok) throw new Error("无法加载模型列表");
+          const payload = await response.json();
+          configuredModels = Array.isArray(payload.models) ? payload.models : [];
+          select.replaceChildren();
+          configuredModels.forEach((model) => {
+            const option = document.createElement("option");
+            option.value = model.id;
+            option.textContent = model.label + " (" + model.model + ")";
+            select.appendChild(option);
+          });
+          if (!configuredModels.length) throw new Error("服务端未配置可用模型");
+          select.value = payload.defaultModelId || configuredModels[0].id;
+          select.disabled = false;
+        } catch (error) {
+          select.replaceChildren();
+          const option = document.createElement("option");
+          option.textContent = "模型列表加载失败";
+          select.appendChild(option);
+          addActivity("模型列表加载失败", error.message || String(error), "warning");
+        }
+      }
+
       function setThread(id) {
         threadId = id || "";
         const label = threadId || "尚未创建会话";
         byId("threadLabel").textContent = label;
         byId("threadValue").textContent = threadId || "尚未创建";
         renderSessions();
+      }
+
+      function currentRun() {
+        if (threadId) return runs.get(threadId);
+        return draftRuns.get(viewId);
+      }
+
+      function runIsVisible(run) {
+        return run.threadId
+          ? run.threadId === threadId && loadingThreadId !== threadId
+          : !threadId && run.viewId === viewId;
+      }
+
+      function bindRunThread(run, id) {
+        if (!id || run.threadId === id) return;
+        const ownsCurrentDraft = !threadId && run.viewId === viewId;
+        run.threadId = id;
+        draftRuns.delete(run.viewId);
+        runs.set(id, run);
+        rememberSession(id, run.title);
+        if (ownsCurrentDraft) setThread(id);
+      }
+
+      function createRun(title) {
+        return {
+          threadId: threadId || "",
+          viewId,
+          title,
+          running: true,
+          waiting: false,
+          status: "running",
+          markdown: "",
+          assistantContent: null,
+          confirmation: null,
+          activities: [],
+          controller: new AbortController()
+        };
+      }
+
+      function syncRunState(run) {
+        if (!run) {
+          setRunState(false, "就绪", "");
+        } else if (run.waiting) {
+          setRunState(false, "等待确认", "waiting");
+        } else if (run.running) {
+          setRunState(true, "Agent 正在执行", "running");
+        } else if (run.status === "failed") {
+          setRunState(false, "执行失败", "failed");
+        } else {
+          setRunState(false, "已完成", "");
+        }
       }
 
       function setRunState(running, label, tone) {
@@ -468,6 +637,106 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
       function removeWelcome() {
         const welcome = byId("welcome");
         if (welcome) welcome.remove();
+      }
+
+      async function copyText(value, button) {
+        try {
+          await navigator.clipboard.writeText(value);
+        } catch {
+          const fallback = document.createElement("textarea");
+          fallback.value = value;
+          fallback.style.position = "fixed";
+          fallback.style.opacity = "0";
+          document.body.appendChild(fallback);
+          fallback.select();
+          document.execCommand("copy");
+          fallback.remove();
+        }
+        const original = button.textContent;
+        button.textContent = "已复制";
+        window.setTimeout(() => { button.textContent = original; }, 1200);
+      }
+
+      function editUserMessage(value) {
+        if (isRunning) {
+          addActivity("暂时无法编辑", "请等待当前任务结束后再编辑并重新发送。", "warning");
+          return;
+        }
+        const input = byId("messageInput");
+        input.value = value;
+        resizeComposer();
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      }
+
+      function messageSource(text, role) {
+        return role === "assistant"
+          ? text.dataset.rawMarkdown || ""
+          : text.textContent || "";
+      }
+
+      function renderAssistantMarkdown(text) {
+        const source = text.dataset.rawMarkdown || "";
+        if (!window.marked || !window.DOMPurify) {
+          text.textContent = source;
+          return;
+        }
+        const parsed = window.marked.parse(source, {
+          async: false,
+          breaks: true,
+          gfm: true
+        });
+        text.innerHTML = window.DOMPurify.sanitize(parsed, {
+          ALLOWED_TAGS: [
+            "a", "blockquote", "br", "code", "del", "em", "h1", "h2",
+            "h3", "h4", "h5", "h6", "hr", "li", "ol", "p", "pre",
+            "strong", "table", "tbody", "td", "th", "thead", "tr", "ul"
+          ],
+          ALLOWED_ATTR: ["class", "href", "title"]
+        });
+        text.querySelectorAll("a").forEach((link) => {
+          link.target = "_blank";
+          link.rel = "noopener noreferrer nofollow";
+        });
+      }
+
+      function appendAssistantToken(run, token) {
+        run.markdown += token;
+        if (!runIsVisible(run)) return;
+        const text = run.assistantContent || createAssistantMessage(run);
+        text.classList.remove("loading");
+        text.classList.add("typing");
+        text.dataset.rawMarkdown = run.markdown;
+        if (text.dataset.renderPending === "true") return;
+        text.dataset.renderPending = "true";
+        requestAnimationFrame(() => {
+          delete text.dataset.renderPending;
+          renderAssistantMarkdown(text);
+          scrollToBottom();
+        });
+      }
+
+      function appendMessageActions(body, text, role) {
+        if (role !== "user" && role !== "assistant") return;
+        const actions = document.createElement("div");
+        actions.className = "message-actions";
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.className = "message-action";
+        copy.textContent = "复制";
+        copy.title = "复制消息内容";
+        copy.addEventListener("click", () => copyText(messageSource(text, role), copy));
+        actions.appendChild(copy);
+        if (role === "user") {
+          const edit = document.createElement("button");
+          edit.type = "button";
+          edit.className = "message-action";
+          edit.textContent = "编辑";
+          edit.title = "载入输入框并重新发送";
+          edit.addEventListener("click", () => editUserMessage(text.textContent || ""));
+          actions.appendChild(edit);
+        }
+        body.appendChild(actions);
       }
 
       function addMessage(role, content, extraClass) {
@@ -490,52 +759,106 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         }
         const text = document.createElement("div");
         text.className = "message-content";
-        text.textContent = content;
+        if (role === "assistant") {
+          text.dataset.rawMarkdown = content;
+          renderAssistantMarkdown(text);
+        } else {
+          text.textContent = content;
+        }
         body.appendChild(text);
+        appendMessageActions(body, text, role);
         row.appendChild(body);
         byId("messagesInner").appendChild(row);
         scrollToBottom();
         return text;
       }
 
-      function createAssistantMessage() {
-        activeAssistantContent = addMessage("assistant", "");
-        activeAssistantContent.classList.add("typing");
-        return activeAssistantContent;
+      function createAssistantMessage(run) {
+        const text = addMessage("assistant", run.markdown || "");
+        run.assistantContent = text;
+        if (run.markdown) {
+          text.classList.add("typing");
+        } else {
+          text.classList.add("loading");
+          const dot = document.createElement("span");
+          dot.className = "loading-dot";
+          text.appendChild(dot);
+        }
+        return text;
       }
 
-      function addActivity(title, detail, tone) {
-        const root = byId("activity");
+      function appendActivityElement(root, activity) {
         const empty = root.querySelector(".activity-empty");
         if (empty) empty.remove();
         const item = document.createElement("div");
-        item.className = "activity-item" + (tone ? " " + tone : "");
+        item.className = "activity-item" + (activity.tone ? " " + activity.tone : "");
         const heading = document.createElement("div");
         heading.className = "activity-title";
         const name = document.createElement("span");
-        name.textContent = title;
+        name.textContent = activity.title;
         const time = document.createElement("span");
         time.className = "activity-time";
-        time.textContent = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        time.textContent = activity.time;
         heading.append(name, time);
         item.appendChild(heading);
-        if (detail) {
+        if (activity.detail) {
           const body = document.createElement("div");
           body.className = "activity-detail";
-          body.textContent = typeof detail === "string" ? detail : JSON.stringify(detail, null, 2);
+          body.textContent = typeof activity.detail === "string"
+            ? activity.detail
+            : JSON.stringify(activity.detail, null, 2);
           item.appendChild(body);
         }
-        root.prepend(item);
+        root.appendChild(item);
       }
 
-      function showApproval(record) {
+      function renderActivities(run) {
+        const root = byId("activity");
+        root.replaceChildren();
+        const activities = run?.activities || [];
+        if (activities.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "activity-empty";
+          empty.textContent = "该会话的执行活动会显示在这里。";
+          root.appendChild(empty);
+          return;
+        }
+        activities.forEach((activity) => appendActivityElement(root, activity));
+      }
+
+      function addActivity(title, detail, tone, run = currentRun()) {
+        const activity = {
+          title,
+          detail,
+          tone,
+          time: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+        };
+        if (run) {
+          run.activities.unshift(activity);
+          if (!runIsVisible(run)) return;
+        }
+        renderActivities(run);
+      }
+
+      function showApproval(record, run) {
+        const method = record.args && record.args.method ? record.args.method : "";
+        const target = record.args && (record.args.url || record.args.path) ? (record.args.url || record.args.path) : "未提供目标";
+        if (run) {
+          run.confirmation = record;
+          run.waiting = true;
+          run.running = false;
+          run.status = "waiting_human_confirm";
+          addActivity("等待人工确认", { toolName: record.toolName, target, args: record.args }, "warning", run);
+          renderSessions();
+          if (!runIsVisible(run)) return;
+        }
         activeConfirmation = record;
         byId("approval").classList.add("visible");
-        byId("approvalMeta").textContent = record.toolName + " · " + record.reason + " · 创建于 " + formatTime(record.createdAt);
+        byId("approvalMeta").textContent = record.toolName + " · " + (method ? method + " " : "") + target + " · 创建于 " + formatTime(record.createdAt);
         byId("approvalArgs").value = JSON.stringify(record.args, null, 2);
         const notice = document.createElement("div");
         notice.className = "approval-notice";
-        notice.textContent = "Agent 请求执行高风险工具 " + record.toolName + "，需要你的确认。";
+        notice.textContent = "Agent 请求执行 " + record.toolName + "：" + (method ? method + " " : "") + target + "，需要你的确认。";
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = "查看审批详情";
@@ -543,7 +866,7 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         notice.appendChild(document.createElement("br"));
         notice.appendChild(button);
         byId("messagesInner").appendChild(notice);
-        addActivity("等待人工确认", { toolName: record.toolName, reason: record.reason }, "warning");
+        if (!run) addActivity("等待人工确认", { toolName: record.toolName, target, args: record.args }, "warning");
         setRunState(false, "等待确认", "waiting");
         openInspector();
         scrollToBottom();
@@ -554,56 +877,69 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         byId("approval").classList.remove("visible");
       }
 
-      function handleEvent(event) {
-        if (event.threadId && !threadId) {
-          setThread(event.threadId);
-          const firstUser = sessions.find((item) => item.threadId === event.threadId);
-          rememberSession(event.threadId, firstUser && firstUser.title);
-        }
+      function handleEvent(event, run) {
+        if (event.threadId) bindRunThread(run, event.threadId);
+        const visible = runIsVisible(run);
 
         switch (event.type) {
           case "token": {
-            const target = activeAssistantContent || createAssistantMessage();
-            target.textContent += event.data.content;
-            scrollToBottom();
+            appendAssistantToken(run, event.data.content);
             break;
           }
           case "tool_call":
-            addActivity("调用工具：" + event.data.toolName, { mode: event.data.mode, risk: event.data.risk, args: event.data.args }, "tool");
+            addActivity("调用工具：" + event.data.toolName, { mode: event.data.mode, risk: event.data.risk, args: event.data.args }, "tool", run);
             break;
           case "tool_result":
-            addActivity("工具完成：" + event.data.toolName, event.data.ok ? event.data.result : event.data.error, event.data.ok ? "success" : "error");
+            addActivity("工具完成：" + event.data.toolName, event.data.ok ? event.data.result : event.data.error, event.data.ok ? "success" : "error", run);
             break;
           case "state_update":
-            addActivity("状态：" + event.data.status, event.data.node ? { node: event.data.node, detail: event.data.detail } : event.data.detail, "");
+            addActivity("状态：" + event.data.status, event.data.node ? { node: event.data.node, detail: event.data.detail } : event.data.detail, "", run);
             break;
           case "need_human_confirm":
-            showApproval(event.data);
+            showApproval(event.data, run);
             break;
           case "error":
-            addMessage("system", event.data.message, "error");
-            addActivity("执行失败", { code: event.data.code, message: event.data.message }, "error");
-            setRunState(false, "执行失败", "failed");
+            run.status = "failed";
+            if (visible) {
+              const detailText = formatErrorDetails(event.data.details);
+              addMessage("system", event.data.message + (detailText ? "\n" + detailText : ""), "error");
+              setRunState(false, "执行失败", "failed");
+            }
+            addActivity("执行失败", { code: event.data.code, message: event.data.message, details: event.data.details }, "error", run);
             break;
           case "done":
-            if (activeAssistantContent) activeAssistantContent.classList.remove("typing");
-            activeAssistantContent = null;
-            if (event.data.status === "waiting_human_confirm") setRunState(false, "等待确认", "waiting");
-            else if (event.data.status === "failed") setRunState(false, "执行失败", "failed");
-            else setRunState(false, "已完成", "");
-            addActivity("任务结束", event.data.status, event.data.status === "completed" ? "success" : "warning");
+            run.status = event.data.status;
+            run.waiting = event.data.status === "waiting_human_confirm";
+            run.running = false;
+            if (run.assistantContent) {
+              if (run.waiting && !run.markdown) {
+                run.assistantContent.closest(".message")?.remove();
+                run.assistantContent = null;
+              } else {
+                renderAssistantMarkdown(run.assistantContent);
+                run.assistantContent.classList.remove("typing", "loading");
+              }
+            }
+            if (visible) {
+              syncRunState(run);
+            }
+            addActivity("任务结束", event.data.status, event.data.status === "completed" ? "success" : "warning", run);
+            renderSessions();
             break;
         }
       }
 
-      async function streamRequest(url, payload) {
-        activeController = new AbortController();
+      async function streamRequest(url, payload, run) {
+        run.controller = new AbortController();
         const headers = getHeaders(false);
         headers["content-type"] = "application/json";
-        const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload), signal: activeController.signal });
+        const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload), signal: run.controller.signal });
         if (!response.ok) {
           let message = await response.text();
-          try { message = JSON.parse(message).message || message; } catch { /* Keep raw server response. */ }
+          try {
+            const errorPayload = JSON.parse(message);
+            message = (errorPayload.message || message) + (formatErrorDetails(errorPayload.details) ? "\n" + formatErrorDetails(errorPayload.details) : "");
+          } catch { /* Keep raw server response. */ }
           throw new Error(message || "请求失败：" + response.status);
         }
         if (!response.body) throw new Error("当前浏览器不支持流式响应");
@@ -620,47 +956,62 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
           for (const frame of frames) {
             const dataLine = frame.split("\n").find((line) => line.startsWith("data: "));
             if (!dataLine) continue;
-            handleEvent(JSON.parse(dataLine.slice(6)));
+            handleEvent(JSON.parse(dataLine.slice(6)), run);
           }
         }
       }
 
+      function formatErrorDetails(details) {
+        if (!Array.isArray(details)) return "";
+        return details.slice(0, 3).map((issue) => {
+          const path = Array.isArray(issue.path) && issue.path.length ? issue.path.join(".") : "请求";
+          return path + "：" + (issue.message || "参数无效");
+        }).join("\n");
+      }
+
       async function sendMessage() {
-        if (isRunning) return;
+        if (currentRun()?.running) return;
         const input = byId("messageInput");
         const message = input.value.trim();
         if (!message) return;
 
         const firstMessage = !threadId;
         addMessage("user", message);
+        const run = createRun(firstMessage ? message.slice(0, 32) : undefined);
+        if (run.threadId) runs.set(run.threadId, run);
+        else draftRuns.set(run.viewId, run);
+        createAssistantMessage(run);
         input.value = "";
         resizeComposer();
         hideApproval();
-        activeAssistantContent = null;
         setRunState(true, "Agent 正在执行", "running");
         addActivity("收到用户消息", message.length > 120 ? message.slice(0, 120) + "…" : message, "");
+        renderSessions();
 
         const payload = { message, userId: byId("userId").value.trim() || "anonymous" };
         if (threadId) payload.threadId = threadId;
-        if (byId("provider").value) payload.modelProvider = byId("provider").value;
-        if (byId("model").value.trim()) payload.model = byId("model").value.trim();
+        Object.assign(payload, getModelSelection());
 
         try {
-          await streamRequest("/v1/chat/stream", payload);
-          if (threadId) rememberSession(threadId, firstMessage ? message.slice(0, 32) : "");
+          await streamRequest("/v1/chat/stream", payload, run);
         } catch (error) {
           if (error.name === "AbortError") {
-            addActivity("已停止接收响应", "客户端中止了 SSE 连接", "warning");
-            setRunState(false, "已停止", "");
+            if (runIsVisible(run)) {
+              addActivity("已停止接收响应", "服务端任务可能仍在后台执行，可稍后重新打开会话查看。", "warning");
+              setRunState(false, "后台执行中", "running");
+            }
           } else {
-            addMessage("system", error.message || String(error), "error");
-            addActivity("请求失败", error.message || String(error), "error");
-            setRunState(false, "请求失败", "failed");
+            run.running = false;
+            run.status = "failed";
+            if (runIsVisible(run)) {
+              addMessage("system", error.message || String(error), "error");
+              addActivity("请求失败", error.message || String(error), "error");
+              setRunState(false, "请求失败", "failed");
+            }
           }
         } finally {
-          if (activeAssistantContent) activeAssistantContent.classList.remove("typing");
-          activeAssistantContent = null;
-          activeController = null;
+          run.controller = null;
+          renderSessions();
         }
       }
 
@@ -673,6 +1024,14 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
           return;
         }
         const confirmation = activeConfirmation;
+        const run = runs.get(confirmation.threadId) || createRun();
+        run.threadId = confirmation.threadId;
+        run.running = true;
+        run.waiting = false;
+        run.status = "running";
+        run.confirmation = null;
+        runs.set(run.threadId, run);
+        if (!run.assistantContent && runIsVisible(run)) createAssistantMessage(run);
         const payload = {
           threadId: confirmation.threadId,
           userId: byId("userId").value.trim() || confirmation.userId || "anonymous",
@@ -682,40 +1041,49 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         };
         const reason = byId("approvalReason").value.trim();
         if (reason) payload.reason = reason;
-        if (byId("provider").value) payload.modelProvider = byId("provider").value;
-        if (byId("model").value.trim()) payload.model = byId("model").value.trim();
 
         byId("approve").disabled = true;
         byId("reject").disabled = true;
         setRunState(true, approved ? "继续执行" : "正在拒绝", "running");
         addActivity(approved ? "用户确认执行" : "用户拒绝执行", { confirmationId: confirmation.confirmationId, argsOverride }, approved ? "success" : "warning");
-        activeAssistantContent = null;
         try {
-          await streamRequest("/v1/chat/confirm/stream", payload);
-          hideApproval();
-          closeDrawers();
+          await streamRequest("/v1/chat/confirm/stream", payload, run);
+          // A resume may immediately emit the next queued approval. Do not let
+          // cleanup for the previous item hide that newly activated record.
+          if (activeConfirmation?.confirmationId === confirmation.confirmationId) {
+            hideApproval();
+            closeDrawers();
+          }
         } catch (error) {
           if (error.name !== "AbortError") {
+            run.running = false;
+            run.status = "failed";
             addMessage("system", error.message || String(error), "error");
             setRunState(false, "审批请求失败", "failed");
           }
         } finally {
           byId("approve").disabled = false;
           byId("reject").disabled = false;
-          activeController = null;
+          run.controller = null;
+          renderSessions();
         }
       }
 
       async function loadThread(id) {
-        if (isRunning) return;
+        viewId = crypto.randomUUID();
+        loadingThreadId = id;
         closeDrawers();
         setThread(id);
         hideApproval();
         const root = byId("messagesInner");
         root.replaceChildren();
-        setRunState(false, "加载会话", "running");
+        const run = runs.get(id);
+        if (run) run.assistantContent = null;
+        renderActivities(run);
+        setRunState(true, "加载会话", "running");
         try {
           const response = await fetch("/v1/threads/" + encodeURIComponent(id), { headers: getHeaders(true) });
+          if (threadId !== id || loadingThreadId !== id) return;
           if (response.status === 404) {
             // Browser session metadata outlives the in-memory development
             // backend after a server restart. Remove only this stale entry.
@@ -726,29 +1094,48 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
           }
           if (!response.ok) throw new Error("加载会话失败");
           const data = await response.json();
+          if (threadId !== id || loadingThreadId !== id) return;
           byId("userId").value = data.thread.userId;
           data.messages.forEach((message) => {
             if (message.role === "user" || message.role === "assistant") addMessage(message.role, message.content);
           });
           const session = sessions.find((item) => item.threadId === id);
           byId("chatTitle").textContent = (session && session.title) || "历史会话";
-          if (data.thread.pendingConfirmation) showApproval(data.thread.pendingConfirmation);
-          else setRunState(false, data.thread.status === "failed" ? "执行失败" : "已恢复", data.thread.status === "failed" ? "failed" : "");
+          loadingThreadId = "";
+          if (run?.running) {
+            createAssistantMessage(run);
+            syncRunState(run);
+          } else if (data.thread.pendingConfirmation) {
+            showApproval(data.thread.pendingConfirmation, run);
+          } else if (data.thread.status === "running") {
+            const restoredRun = run || createRun(session?.title);
+            restoredRun.threadId = id;
+            restoredRun.running = true;
+            runs.set(id, restoredRun);
+            createAssistantMessage(restoredRun);
+            syncRunState(restoredRun);
+          } else {
+            setRunState(false, data.thread.status === "failed" ? "执行失败" : "已恢复", data.thread.status === "failed" ? "failed" : "");
+          }
+          renderActivities(runs.get(id));
+          renderSessions();
         } catch (error) {
+          if (threadId !== id) return;
+          loadingThreadId = "";
           addMessage("system", error.message || String(error), "error");
           setRunState(false, "加载失败", "failed");
         }
       }
 
       function startNewChat() {
-        if (activeController) activeController.abort();
+        viewId = crypto.randomUUID();
+        loadingThreadId = "";
         setThread("");
         hideApproval();
-        activeAssistantContent = null;
         byId("chatTitle").textContent = "新对话";
-        byId("messagesInner").innerHTML = '<div id="welcome" class="welcome"><div class="welcome-mark">A</div><h1>今天需要 Agent 帮你完成什么？</h1><p>可以直接对话，也可以让 Agent 选择 Skill、调用工具并在高风险操作前等待你的确认。</p><div class="suggestions"><button class="suggestion" type="button" data-prompt="读取 sandbox 目录下的 README.md，并总结主要内容"><strong>分析工作区文件</strong><span>使用带沙盒限制的文件读取工具</span></button><button class="suggestion" type="button" data-prompt="请列出当前可用的技能，并说明各自适用场景"><strong>查看可用技能</strong><span>了解渐进加载的 Skill 能力</span></button><button class="suggestion" type="button" data-prompt="访问 https://api.github.com 并概括响应信息"><strong>调用 HTTP 工具</strong><span>观察工具参数、执行结果与审批</span></button><button class="suggestion" type="button" data-prompt="请制定一个分步骤执行的任务计划，并说明哪些步骤可以并行"><strong>规划复杂任务</strong><span>体验串行与并行执行决策</span></button></div></div>';
+        byId("messagesInner").innerHTML = '<div id="welcome" class="welcome"><div class="welcome-mark">A</div><h1>今天需要 Agent 帮你完成什么？</h1><p>像描述真实任务一样提出需求，Agent 会自行选择 Skill、安排步骤并调用工具。</p><div class="suggestions"><button class="suggestion" type="button" data-prompt="请让 workspace-inspection 帮我阅读 README.md，并整理出项目的主要用途和安全限制"><strong>检查项目说明</strong><span>指定工作区检查能力完成任务</span></button><button class="suggestion" type="button" data-prompt="帮我阅读 README.md，用三点总结这个项目的主要内容"><strong>快速了解项目</strong><span>Agent 根据需求自动选择合适能力</span></button><button class="suggestion" type="button" data-prompt="先阅读 README.md，了解项目的文件访问限制；然后访问 https://jsonplaceholder.typicode.com/todos/1，核对该公开 API 请求是否符合这些限制"><strong>核对内外资料</strong><span>后一项工作基于前一项的结论</span></button><button class="suggestion" type="button" data-prompt="我正在整理两份互不依赖的资料：README.md 和 https://jsonplaceholder.typicode.com/todos/1。请同时收集它们的内容，最后统一汇总"><strong>同步收集资料</strong><span>独立的信息收集任务可以同时推进</span></button><button class="suggestion" type="button" data-prompt="请综合分析 README.md 与 https://jsonplaceholder.typicode.com/todos/1 的内容，说明项目文档和公开 API 数据各自的用途，并自行安排最合适的执行顺序"><strong>完成综合调研</strong><span>Agent 根据实际依赖自行安排执行步骤</span></button></div></div>';
         bindSuggestions();
-        byId("activity").innerHTML = '<div class="activity-empty">Agent 开始执行后，这里会显示状态变化和工具调用。</div>';
+        renderActivities();
         setRunState(false, "就绪", "");
         closeDrawers();
         byId("messageInput").focus();
@@ -771,7 +1158,7 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
       }
 
       byId("send").addEventListener("click", sendMessage);
-      byId("stop").addEventListener("click", () => activeController && activeController.abort());
+      byId("stop").addEventListener("click", () => currentRun()?.controller?.abort());
       byId("newChat").addEventListener("click", startNewChat);
       byId("approve").addEventListener("click", () => submitApproval(true));
       byId("reject").addEventListener("click", () => submitApproval(false));
@@ -789,6 +1176,7 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
 
       renderSessions();
       bindSuggestions();
+      void loadConfiguredModels();
       byId("messageInput").focus();
     </script>
   </body>

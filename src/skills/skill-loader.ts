@@ -7,9 +7,11 @@ import type { AppLogger } from "../common/logger.js";
 import {
   LoadedSkillSchema,
   SkillFrontmatterSchema,
+  SkillMatchSchema,
   SkillSummarySchema,
   type LoadedSkill,
   type SkillFrontmatter,
+  type SkillMatch,
   type SkillSummary
 } from "./types.js";
 
@@ -70,32 +72,77 @@ export class SkillLoader {
    * normal path still uses model-based dynamic routing.
    */
   async findMatches(input: string): Promise<SkillSummary[]> {
+    return (await this.findMatchDetails(input)).map((match) => match.summary);
+  }
+
+  /**
+   * Distinguishes a direct Skill name from a trigger-based intent match. ASCII
+   * triggers use word boundaries so values such as `file` do not match
+   * unrelated words such as `profile`.
+   */
+  async findMatchDetails(input: string): Promise<SkillMatch[]> {
     await this.initialize();
     const normalizedInput = input.toLocaleLowerCase();
     const scored = [...this.summaries.values()]
       .map((summary) => {
-        const nameMatch = normalizedInput.includes(summary.name.toLocaleLowerCase());
+        const normalizedName = summary.name.toLocaleLowerCase();
+        const namePosition = normalizedInput.indexOf(normalizedName);
+        const nameMatch = namePosition >= 0;
         const triggerMatches = summary.triggers.filter((trigger) =>
-          normalizedInput.includes(trigger.toLocaleLowerCase())
-        ).length;
+          matchesTrigger(normalizedInput, trigger.toLocaleLowerCase())
+        );
+        const triggerPositions = triggerMatches.map((trigger) =>
+          normalizedInput.indexOf(trigger.toLocaleLowerCase())
+        );
         return {
           summary,
-          score: nameMatch ? 100 : triggerMatches * 10,
+          score: nameMatch ? 1000 : triggerMatches.length * 10,
           nameMatch,
-          triggerMatches
+          matchedTriggers: triggerMatches,
+          position: nameMatch
+            ? namePosition
+            : Math.min(...triggerPositions.filter((position) => position >= 0))
         };
       })
-      .filter((item) => item.nameMatch || item.triggerMatches > 0)
-      .sort((left, right) => right.score - left.score);
+      .filter((item) => item.nameMatch || item.matchedTriggers.length > 0)
+      .sort((left, right) => right.score - left.score || left.position - right.position);
 
     const explicit = scored.filter((item) => item.nameMatch);
     if (explicit.length > 0) {
-      return explicit.map((item) => item.summary);
+      const explicitNames = new Set(
+        explicit.map((item) => item.summary.name)
+      );
+      const selected = [
+        ...explicit,
+        ...scored
+          .filter((item) => !explicitNames.has(item.summary.name))
+          .slice(0, Math.max(0, 3 - explicit.length))
+      ];
+      return selected
+        .sort((left, right) => left.position - right.position)
+        .map((item) =>
+          SkillMatchSchema.parse({
+            summary: item.summary,
+            source: item.nameMatch ? "explicit" : "intent",
+            score: item.score,
+            position: item.position,
+            matchedTriggers: item.matchedTriggers
+          })
+        );
     }
     return scored
-      .filter((item) => item.triggerMatches > 0)
+      .filter((item) => item.matchedTriggers.length > 0)
       .slice(0, 3)
-      .map((item) => item.summary);
+      .sort((left, right) => left.position - right.position)
+      .map((item) =>
+        SkillMatchSchema.parse({
+          summary: item.summary,
+          source: "intent",
+          score: item.score,
+          position: item.position,
+          matchedTriggers: item.matchedTriggers
+        })
+      );
   }
 
   async load(skillName: string): Promise<LoadedSkill> {
@@ -170,4 +217,14 @@ export class SkillLoader {
       this.summaries.set(summary.name, summary);
     }
   }
+}
+
+function matchesTrigger(input: string, trigger: string): boolean {
+  if (!/^[a-z0-9_-]+$/i.test(trigger)) {
+    return input.includes(trigger);
+  }
+  const escaped = trigger.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9_-])${escaped}(?=$|[^a-z0-9_-])`, "i").test(
+    input
+  );
 }

@@ -72,6 +72,10 @@ export const AgentState = Annotation.Root({
     reducer: (_left, right) => right,
     default: () => undefined
   }),
+  approvalDecisions: Annotation<HumanConfirmationDecision[]>({
+    reducer: (_left, right) => right,
+    default: () => []
+  }),
   skillResults: Annotation<SkillExecutionResult[]>({
     reducer: (_left, right) => right,
     default: () => []

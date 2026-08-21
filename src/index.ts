@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import Fastify, {
   type FastifyReply,
   type FastifyRequest
@@ -213,8 +215,10 @@ const EVENT_DEBUG_HTML = String.raw`<!doctype html>
 
       function showConfirmation(record) {
         activeConfirmation = record;
+        const method = record.args && record.args.method ? record.args.method : "";
+        const target = record.args && (record.args.url || record.args.path) ? (record.args.url || record.args.path) : "未提供目标";
         $("confirm").classList.add("visible");
-        $("confirmMeta").textContent = record.toolName + "：" + (record.reason || "该工具需要人工确认") + "（确认 ID：" + record.confirmationId + "）";
+        $("confirmMeta").textContent = record.toolName + "：" + (method ? method + " " : "") + target + "（确认 ID：" + record.confirmationId + "）";
         $("confirmArgs").value = JSON.stringify(record.args, null, 2);
       }
 
@@ -276,13 +280,14 @@ const EVENT_DEBUG_HTML = String.raw`<!doctype html>
 
       async function submitConfirmation(approved) {
         if (!activeConfirmation) return;
+        const confirmation = activeConfirmation;
         let argsOverride;
         try { argsOverride = JSON.parse($("confirmArgs").value); }
         catch { return setStatus("工具参数不是合法 JSON", true); }
         const payload = {
-          threadId: activeConfirmation.threadId,
-          userId: $("userId").value.trim() || activeConfirmation.userId || "anonymous",
-          confirmationId: activeConfirmation.confirmationId,
+          threadId: confirmation.threadId,
+          userId: $("userId").value.trim() || confirmation.userId || "anonymous",
+          confirmationId: confirmation.confirmationId,
           approved,
           reason: $("confirmReason").value.trim() || undefined,
           argsOverride
@@ -290,7 +295,10 @@ const EVENT_DEBUG_HTML = String.raw`<!doctype html>
         setStatus(approved ? "已确认，继续执行…" : "已拒绝，结束任务…");
         $("approve").disabled = true;
         $("reject").disabled = true;
-        try { await streamRequest("/v1/chat/confirm/stream", payload); hideConfirmation(); }
+        try {
+          await streamRequest("/v1/chat/confirm/stream", payload);
+          if (activeConfirmation?.confirmationId === confirmation.confirmationId) hideConfirmation();
+        }
         catch (error) { if (error.name !== "AbortError") setStatus(error.message, true); }
         finally { $("approve").disabled = false; $("reject").disabled = false; }
       }
@@ -336,6 +344,16 @@ async function writeSse(
 async function main(): Promise<void> {
   const env = loadEnv();
   const logger = createLogger(env);
+  const [markedBrowserScript, domPurifyBrowserScript] = await Promise.all([
+    fs.readFile(
+      path.resolve(process.cwd(), "node_modules/marked/lib/marked.umd.js"),
+      "utf8"
+    ),
+    fs.readFile(
+      path.resolve(process.cwd(), "node_modules/dompurify/dist/purify.min.js"),
+      "utf8"
+    )
+  ]);
   const server = Fastify({
     loggerInstance: logger,
     requestIdHeader: "x-request-id",
@@ -351,7 +369,13 @@ async function main(): Promise<void> {
   server.addHook("onRequest", async (request, reply) => {
     const publicPage =
       request.method === "GET" &&
-      ["/", "/health", "/debug/events"].includes(request.url.split("?")[0] ?? "");
+      [
+        "/",
+        "/health",
+        "/debug/events",
+        "/assets/marked.umd.js",
+        "/assets/purify.min.js"
+      ].includes(request.url.split("?")[0] ?? "");
     if (
       env.AUTH_API_KEY &&
       !publicPage &&
@@ -437,6 +461,26 @@ async function main(): Promise<void> {
   server.get("/health", async () => ({
     status: "ok",
     service: "web-agent-framework"
+  }));
+
+  server.get("/assets/marked.umd.js", async (_request, reply) => {
+    return await reply
+      .header("cache-control", "public, max-age=86400, immutable")
+      .type("application/javascript; charset=utf-8")
+      .send(markedBrowserScript);
+  });
+
+  server.get("/assets/purify.min.js", async (_request, reply) => {
+    return await reply
+      .header("cache-control", "public, max-age=86400, immutable")
+      .type("application/javascript; charset=utf-8")
+      .send(domPurifyBrowserScript);
+  });
+
+  // Expose only operator-approved routing metadata. API keys remain server-only.
+  server.get("/v1/models", async () => ({
+    defaultModelId: env.modelCatalog[0]?.id,
+    models: env.modelCatalog
   }));
 
   server.get("/", async (_request, reply) => {

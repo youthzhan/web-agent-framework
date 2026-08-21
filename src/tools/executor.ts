@@ -9,7 +9,7 @@ import type { AgentTool, ToolCall, ToolExecutionMode } from "./types.js";
 import type { ToolRegistry } from "./types.js";
 
 type ToolExecutionOptions = {
-  allowHighRisk?: boolean;
+  approvedHighRiskToolCallIds?: readonly string[];
   skillName: string;
   executionMode: ToolExecutionMode;
 };
@@ -63,6 +63,9 @@ export class ToolExecutor {
     const tool = this.registry.getRequired(call.toolName);
     const parsedArgs = tool.argsSchema.parse(call.args);
     const checkpointArgs = JsonValueSchema.parse(parsedArgs);
+    const highRiskApproved =
+      tool.risk === "low" ||
+      options.approvedHighRiskToolCallIds?.includes(call.toolCallId) === true;
 
     emitSseEvent("tool_call", {
       requestId: context.requestId,
@@ -73,7 +76,7 @@ export class ToolExecutor {
         toolCallId: call.toolCallId,
         mode: options.executionMode,
         risk: tool.risk,
-        requiresConfirmation: tool.risk !== "low" && !options.allowHighRisk,
+        requiresConfirmation: !highRiskApproved,
         args: checkpointArgs
       }
     });
@@ -90,7 +93,7 @@ export class ToolExecutor {
       "tool_call"
     );
 
-    if (tool.risk !== "low" && !options.allowHighRisk) {
+    if (!highRiskApproved) {
       const confirmationId = randomUUID();
       const reason = `Tool ${tool.name} is classified as ${tool.risk} risk`;
       const confirmation = HumanConfirmationRecordSchema.parse({

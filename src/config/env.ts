@@ -1,6 +1,7 @@
 import "dotenv/config";
 import path from "node:path";
 import { z } from "zod";
+import { ModelProviderSchema } from "../schemas/api.js";
 
 const emptyToUndefined = (value: unknown) => {
   if (typeof value === "string" && value.trim() === "") {
@@ -13,6 +14,17 @@ const BooleanEnvSchema = z
   .enum(["true", "false"])
   .default("true")
   .transform((value) => value === "true");
+
+export const ModelCatalogEntrySchema = z.object({
+  id: z.string().min(1).max(64).regex(/^[a-zA-Z0-9_-]+$/),
+  label: z.string().min(1).max(100),
+  provider: ModelProviderSchema,
+  model: z.string().min(1).max(128)
+});
+
+export type ModelCatalogEntry = z.infer<typeof ModelCatalogEntrySchema>;
+
+const ModelCatalogSchema = z.array(ModelCatalogEntrySchema).min(1).max(20);
 
 const EnvSchema = z.object({
   NODE_ENV: z
@@ -47,6 +59,7 @@ const EnvSchema = z.object({
   OPENAI_COMPATIBLE_MODEL: z.string().default("local-model"),
   ANTHROPIC_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
   ANTHROPIC_MODEL: z.string().default("claude-3-5-sonnet-latest"),
+  MODEL_CATALOG: z.preprocess(emptyToUndefined, z.string().optional()),
   MODEL_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   PLANNER_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
   SKILL_PLAN_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
@@ -94,6 +107,7 @@ export type AppEnv = z.infer<typeof EnvSchema> & {
   sandboxRootAbs: string;
   skillsDirAbs: string;
   httpAllowedHosts: string[];
+  modelCatalog: ModelCatalogEntry[];
 };
 
 export function loadEnv(): AppEnv {
@@ -106,6 +120,12 @@ export function loadEnv(): AppEnv {
       "CHECKPOINT_BACKEND=memory is only allowed when NODE_ENV is development or test"
     );
   }
+  const defaultModel = ModelCatalogEntrySchema.parse({
+    id: "default",
+    label: "\u670d\u52a1\u7aef\u9ed8\u8ba4\u6a21\u578b",
+    provider: parsed.DEFAULT_MODEL_PROVIDER,
+    model: resolveDefaultModelName(parsed)
+  });
   return {
     ...parsed,
     checkpointBackend,
@@ -113,6 +133,49 @@ export function loadEnv(): AppEnv {
     skillsDirAbs: path.resolve(process.cwd(), parsed.SKILLS_DIR),
     httpAllowedHosts: parsed.HTTP_TOOL_ALLOWED_HOSTS.split(",")
       .map((host) => host.trim())
-      .filter(Boolean)
+      .filter(Boolean),
+    modelCatalog: parseModelCatalog(parsed.MODEL_CATALOG, defaultModel)
   };
+}
+
+/** Parses an allow-listed model catalog without ever exposing provider keys. */
+export function parseModelCatalog(
+  value: string | undefined,
+  defaultModel: ModelCatalogEntry
+): ModelCatalogEntry[] {
+  if (!value) {
+    return [defaultModel];
+  }
+
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(value);
+  } catch (error) {
+    throw new Error(`MODEL_CATALOG must be valid JSON: ${(error as Error).message}`);
+  }
+  const configured = ModelCatalogSchema.parse(decoded);
+  const configuredDefault = configured.find(
+    (entry) =>
+      entry.provider === defaultModel.provider && entry.model === defaultModel.model
+  );
+  const seen = new Set<string>();
+  return [configuredDefault ?? defaultModel, ...configured].filter((entry) => {
+    const key = `${entry.provider}:${entry.model}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function resolveDefaultModelName(parsed: z.infer<typeof EnvSchema>): string {
+  switch (parsed.DEFAULT_MODEL_PROVIDER) {
+    case "anthropic":
+      return parsed.ANTHROPIC_MODEL;
+    case "openai":
+      return parsed.OPENAI_MODEL;
+    case "openai-compatible":
+      return parsed.OPENAI_COMPATIBLE_MODEL;
+  }
 }
