@@ -15,6 +15,11 @@ const BooleanEnvSchema = z
   .default("true")
   .transform((value) => value === "true");
 
+const DisabledBooleanEnvSchema = z
+  .enum(["true", "false"])
+  .default("false")
+  .transform((value) => value === "true");
+
 export const ModelCatalogEntrySchema = z.object({
   id: z.string().min(1).max(64).regex(/^[a-zA-Z0-9_-]+$/),
   label: z.string().min(1).max(100),
@@ -48,6 +53,10 @@ const EnvSchema = z.object({
     .default("openai"),
   OPENAI_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
   OPENAI_MODEL: z.string().default("gpt-4.1-mini"),
+  // Responses API state is intentionally opt-in. Each enabled provider stores
+  // final responses and later turns use `previous_response_id`.
+  OPENAI_RESPONSES_STATE_ENABLED: DisabledBooleanEnvSchema,
+  OPENAI_RESPONSES_STORE: DisabledBooleanEnvSchema,
   OPENAI_COMPATIBLE_API_KEY: z.preprocess(
     emptyToUndefined,
     z.string().optional()
@@ -57,6 +66,8 @@ const EnvSchema = z.object({
     .url()
     .default("http://localhost:8000/v1"),
   OPENAI_COMPATIBLE_MODEL: z.string().default("local-model"),
+  OPENAI_COMPATIBLE_RESPONSES_STATE_ENABLED: DisabledBooleanEnvSchema,
+  OPENAI_COMPATIBLE_RESPONSES_STORE: DisabledBooleanEnvSchema,
   ANTHROPIC_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
   ANTHROPIC_MODEL: z.string().default("claude-3-5-sonnet-latest"),
   MODEL_CATALOG: z.preprocess(emptyToUndefined, z.string().optional()),
@@ -112,6 +123,22 @@ export type AppEnv = z.infer<typeof EnvSchema> & {
 
 export function loadEnv(): AppEnv {
   const parsed = EnvSchema.parse(process.env);
+  if (
+    parsed.OPENAI_RESPONSES_STATE_ENABLED &&
+    !parsed.OPENAI_RESPONSES_STORE
+  ) {
+    throw new Error(
+      "OPENAI_RESPONSES_STORE=true is required when OPENAI_RESPONSES_STATE_ENABLED=true"
+    );
+  }
+  if (
+    parsed.OPENAI_COMPATIBLE_RESPONSES_STATE_ENABLED &&
+    !parsed.OPENAI_COMPATIBLE_RESPONSES_STORE
+  ) {
+    throw new Error(
+      "OPENAI_COMPATIBLE_RESPONSES_STORE=true is required when OPENAI_COMPATIBLE_RESPONSES_STATE_ENABLED=true"
+    );
+  }
   const checkpointBackend =
     parsed.CHECKPOINT_BACKEND ??
     (parsed.NODE_ENV === "development" ? "memory" : "redis");

@@ -17,6 +17,7 @@ import type { MessageStore } from "../persistence/message-store.js";
 import type { ThreadStore } from "../persistence/thread-store.js";
 import type { ModelRouter } from "../model/model-router.js";
 import type { ModelAdapter } from "../model/model-adapter.js";
+import type { TextInvokeOptions } from "../model/types.js";
 import type { SkillLoader } from "../skills/skill-loader.js";
 import type { SkillEngine } from "../skills/skill-engine.js";
 import {
@@ -393,18 +394,80 @@ export class AgentWorkflow {
           "Keep the answer concise and useful."
         ].join("\n")
       );
+      const thread = await this.threadStore.get(state.threadId);
+      const storedResponseState = thread?.openAiResponseState;
+      const responsesProvider =
+        state.modelProvider === "openai" ||
+        state.modelProvider === "openai-compatible"
+          ? state.modelProvider
+          : undefined;
+      const responsesStateEnabled =
+        (responsesProvider === "openai" &&
+          this.env.OPENAI_RESPONSES_STATE_ENABLED) ||
+        (responsesProvider === "openai-compatible" &&
+          this.env.OPENAI_COMPATIBLE_RESPONSES_STATE_ENABLED);
+      let previousResponseId: string | undefined;
+      if (
+        responsesStateEnabled &&
+        storedResponseState &&
+        storedResponseState.provider === responsesProvider &&
+        storedResponseState.model === state.model
+      ) {
+        previousResponseId = storedResponseState.responseId;
+      }
       const user = new HumanMessage(
         JSON.stringify({
           userMessage: state.message,
             plannerResponse: state.plan?.response,
             skillResults: state.skillResults,
             longTermMemorySummary: state.longTermMemory || undefined,
-            recentHistory: state.history.map((item) => ({
-            role: item.role,
-            content: item.content
-          }))
+            // Once an OpenAI response chain exists, the vendor already has the
+            // prior final turns. The application still stores and supplies its
+            // own history to planning and memory services.
+            recentHistory: previousResponseId
+              ? undefined
+              : state.history.map((item) => ({
+                  role: item.role,
+                  content: item.content
+                }))
         })
       );
+
+      const responseOptions: TextInvokeOptions = { operation: "agent_finalize" };
+      if (responsesStateEnabled && responsesProvider) {
+        const activeResponsesProvider = responsesProvider;
+        responseOptions.responseState = {
+          ...(previousResponseId ? { previousResponseId } : {}),
+          onResponseStored: async (responseId) => {
+            await this.threadStore.setOpenAiResponseState(state.threadId, {
+              responseId,
+              provider: activeResponsesProvider,
+              model:
+                state.model ??
+                (activeResponsesProvider === "openai"
+                  ? this.env.OPENAI_MODEL
+                  : this.env.OPENAI_COMPATIBLE_MODEL)
+            });
+            emitSseEvent("state_update", {
+              requestId: context.requestId,
+              threadId: context.threadId,
+              userId: context.userId,
+              data: {
+                status: "vendor_context_stored",
+                node: "finalize",
+                detail: {
+                  provider: activeResponsesProvider,
+                  store:
+                    activeResponsesProvider === "openai"
+                      ? this.env.OPENAI_RESPONSES_STORE
+                      : this.env.OPENAI_COMPATIBLE_RESPONSES_STORE,
+                  continuedFromPreviousResponse: Boolean(previousResponseId)
+                }
+              }
+            });
+          }
+        };
+      }
 
       const response = await model.streamText(
         [system, user],
@@ -416,7 +479,7 @@ export class AgentWorkflow {
             data: { content: token }
           });
         },
-        { operation: "agent_finalize" }
+        responseOptions
       );
 
       await this.messageStore.append({

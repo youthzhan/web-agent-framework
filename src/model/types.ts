@@ -36,4 +36,13 @@ export type TextInvokeOptions = {
   operation: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /**
+   * Opt-in OpenAI Responses API conversation state. This is deliberately
+   * supplied per call so planning and tool orchestration never contaminate the
+   * user-facing vendor conversation chain.
+   */
+  responseState?: {
+    previousResponseId?: string;
+    onResponseStored: (responseId: string) => Promise<void>;
+  };
 };
