@@ -74,9 +74,55 @@ const EnvSchema = z.object({
   MODEL_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   PLANNER_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
   SKILL_PLAN_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  SKILL_SUMMARY_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(30_000),
+  // The final Agent node already summarizes tool results. Keep this optional
+  // intermediate model call disabled by default to reduce Skill latency.
+  SKILL_SUMMARY_ENABLED: DisabledBooleanEnvSchema,
+  // For explicit file paths and HTTP URLs, derive a schema-validated tool
+  // plan locally instead of spending an extra model request on planning.
+  SKILL_DETERMINISTIC_TOOL_PLAN_ENABLED: BooleanEnvSchema,
   SKILL_PLANNER_FALLBACK_ENABLED: BooleanEnvSchema,
   SKILL_TOOL_PLAN_FALLBACK_ENABLED: BooleanEnvSchema,
   MODEL_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
+  // Final-answer prompt/output budgets keep tool-heavy requests responsive.
+  FINAL_HISTORY_MESSAGES: z.coerce.number().int().min(0).max(20).default(4),
+  FINAL_TOOL_RESULT_MAX_CHARS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(100_000)
+    .default(12_000),
+  FINAL_RESPONSE_MAX_TOKENS: z.coerce
+    .number()
+    .int()
+    .min(64)
+    .max(4_096)
+    .default(512),
+  // Direct chat has no tool evidence to synthesize. Tighter budgets reduce
+  // provider prefill and completion latency while full history stays in Redis.
+  DIRECT_HISTORY_MESSAGES: z.coerce.number().int().min(0).max(10).default(2),
+  DIRECT_HISTORY_MAX_CHARS: z.coerce
+    .number()
+    .int()
+    .min(500)
+    .max(20_000)
+    .default(4_000),
+  DIRECT_MEMORY_MAX_CHARS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(10_000)
+    .default(1_500),
+  DIRECT_RESPONSE_MAX_TOKENS: z.coerce
+    .number()
+    .int()
+    .min(64)
+    .max(1_024)
+    .default(768),
 
   AGENT_RECURSION_LIMIT: z.coerce.number().int().min(3).max(100).default(25),
   AGENT_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),

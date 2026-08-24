@@ -2,7 +2,9 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { describe, expect, it } from "vitest";
 import {
   buildOpenAIResponsesRequest,
-  describeModelProviderError
+  describeModelProviderError,
+  extractOpenAIResponsesStreamMetadata,
+  extractOpenAIResponsesTextChunk
 } from "../src/model/model-adapter.js";
 import { ThreadStore } from "../src/persistence/thread-store.js";
 
@@ -59,6 +61,51 @@ describe("OpenAI Responses API state request", () => {
       provider: "openai-compatible",
       model: "gpt-4.1-mini"
     });
+  });
+
+  it("reads a continuation id from non-terminal compatible stream events", () => {
+    const created = extractOpenAIResponsesStreamMetadata({
+      type: "response.created",
+      response: { id: "resp_created_123" }
+    });
+    const textDelta = extractOpenAIResponsesStreamMetadata({
+      type: "response.output_text.delta",
+      response_id: "resp_delta_456"
+    });
+
+    expect(created.responseId).toBe("resp_created_123");
+    expect(textDelta.responseId).toBe("resp_delta_456");
+  });
+
+  it("falls back to final response text when compatible streams omit deltas", () => {
+    expect(
+      extractOpenAIResponsesTextChunk({
+        type: "response.output_text.done",
+        text: "已完成"
+      })
+    ).toEqual({ completedText: "已完成" });
+    expect(
+      extractOpenAIResponsesTextChunk({
+        type: "response.completed",
+        response: {
+          output: [
+            {
+              type: "message",
+              content: [{ type: "output_text", text: "最终回答" }]
+            }
+          ]
+        }
+      })
+    ).toEqual({ completedText: "最终回答" });
+    expect(
+      extractOpenAIResponsesTextChunk({
+        type: "response.output_item.done",
+        item: {
+          type: "message",
+          content: [{ type: "output_text", text: "输出项回答" }]
+        }
+      })
+    ).toEqual({ completedText: "输出项回答" });
   });
 
   it("preserves provider diagnostics without exposing API keys", () => {

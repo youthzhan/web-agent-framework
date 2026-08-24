@@ -30,12 +30,18 @@ export type JsonInvokeOptions = {
   operation: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Optional provider output cap for latency-sensitive final answers. */
+  maxOutputTokens?: number;
 };
 
 export type TextInvokeOptions = {
   operation: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Optional provider output cap for latency-sensitive final answers. */
+  maxOutputTokens?: number;
+  /** Called once when the provider returns the first visible output token. */
+  onFirstToken?: () => void;
   /**
    * Opt-in OpenAI Responses API conversation state. This is deliberately
    * supplied per call so planning and tool orchestration never contaminate the

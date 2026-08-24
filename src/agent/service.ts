@@ -15,6 +15,10 @@ import { AgentGraphInputSchema } from "./state.js";
 import { AgentWorkflow } from "./workflow.js";
 
 export class AgentService {
+  // Prevent duplicate browser clicks or multiple tabs from resuming the same
+  // checkpoint concurrently in this service instance.
+  private readonly activeConfirmationRuns = new Set<string>();
+
   constructor(
     private readonly env: AppEnv,
     private readonly logger: AppLogger,
@@ -75,6 +79,11 @@ export class AgentService {
           request: HumanConfirmation;
         }
   ): Promise<void> {
+    const confirmationLockKey =
+      input.mode === "resume"
+        ? `${input.threadId}:${input.request.confirmationId}`
+        : undefined;
+    let confirmationLockAcquired = false;
     const logger = this.logger.child({
       requestId: input.requestId,
       threadId: input.threadId,
@@ -91,6 +100,17 @@ export class AgentService {
       },
       async () => {
         try {
+          if (confirmationLockKey) {
+            if (this.activeConfirmationRuns.has(confirmationLockKey)) {
+              throw new AppError(
+                "BAD_REQUEST",
+                "Confirmation request is already being processed",
+                { statusCode: 409 }
+              );
+            }
+            this.activeConfirmationRuns.add(confirmationLockKey);
+            confirmationLockAcquired = true;
+          }
           queue.push(
             createSseEvent("state_update", {
               requestId: input.requestId,
@@ -245,6 +265,9 @@ export class AgentService {
             })
           );
         } finally {
+          if (confirmationLockAcquired && confirmationLockKey) {
+            this.activeConfirmationRuns.delete(confirmationLockKey);
+          }
           queue.close();
         }
       }

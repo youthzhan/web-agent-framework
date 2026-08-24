@@ -155,18 +155,82 @@ export class SkillEngine {
       toolResults.push(...results.map((item) => item.result));
     }
 
-    const output = await model.invokeText(
-      model.helperMessages(
-        [
-          "You are a skill result synthesizer.",
-          `Skill instructions:\n${prepared.skill.instructions}`,
-          "Use the tool results and user task to produce concise, factual output.",
-          "Do not claim an action succeeded unless a tool result proves it."
-        ].join("\n"),
-        JSON.stringify({ task: prepared.input, toolResults })
-      ),
-      { operation: `skill_summarize:${prepared.skill.name}` }
-    );
+    let output: string;
+    if (!this.env.SKILL_SUMMARY_ENABLED) {
+      output = this.createSummaryFallbackOutput(prepared.skill.name, toolResults);
+      emitSseEvent("state_update", {
+        requestId: context.requestId,
+        threadId: context.threadId,
+        userId: context.userId,
+        data: {
+          status: "skill_summary_skipped",
+          node: "skill_engine",
+          detail: {
+            skillName: prepared.skill.name,
+            reason: "disabled_to_reduce_latency",
+            toolCount: toolResults.length
+          }
+        }
+      });
+    } else {
+      try {
+      const summarized = await model.invokeText(
+        model.helperMessages(
+          [
+            "You are a skill result synthesizer.",
+            `Skill instructions:\n${prepared.skill.instructions}`,
+            "Use the tool results and user task to produce concise, factual output.",
+            "Do not claim an action succeeded unless a tool result proves it."
+          ].join("\n"),
+          JSON.stringify({ task: prepared.input, toolResults })
+        ),
+        {
+          operation: `skill_summarize:${prepared.skill.name}`,
+          timeoutMs: this.env.SKILL_SUMMARY_TIMEOUT_MS
+        }
+      );
+      output = summarized.text;
+      } catch (error) {
+      if (
+        !(error instanceof AppError) ||
+        !["MODEL_TIMEOUT", "MODEL_ERROR"].includes(error.code)
+      ) {
+        throw error;
+      }
+      // Tool results are already validated execution facts. Retain them when
+      // the optional per-Skill prose summary fails; the final Agent node still
+      // receives these facts and can produce the user-facing answer.
+      output = this.createSummaryFallbackOutput(prepared.skill.name, toolResults);
+      emitSseEvent("state_update", {
+        requestId: context.requestId,
+        threadId: context.threadId,
+        userId: context.userId,
+        data: {
+          status: "skill_summary_fallback",
+          node: "skill_engine",
+          detail: {
+            skillName: prepared.skill.name,
+            reason:
+              error.code === "MODEL_TIMEOUT"
+                ? "model_timeout"
+                : "model_error",
+            toolCount: toolResults.length
+          }
+        }
+      });
+      this.logger.warn(
+        {
+          requestId: context.requestId,
+          threadId: context.threadId,
+          userId: context.userId,
+          skillName: prepared.skill.name,
+          fallbackReason: error.code,
+          toolCount: toolResults.length
+        },
+        "skill_summary_fallback"
+      );
+      }
+    }
 
     this.logger.info(
       {
@@ -180,7 +244,7 @@ export class SkillEngine {
     );
     return ExecutionResultSchema.parse({
       skillName: prepared.skill.name,
-      output: output.text,
+      output,
       toolResults
     });
   }
@@ -250,6 +314,40 @@ export class SkillEngine {
     model: ModelAdapter;
     toolNames: string;
   }): Promise<z.infer<typeof SkillToolPlanSchema>> {
+    const deterministicPlan =
+      this.env.SKILL_DETERMINISTIC_TOOL_PLAN_ENABLED
+        ? this.createExplicitToolPlan(input.skill, input.plan.input)
+        : undefined;
+    if (deterministicPlan) {
+      const context = getRuntimeContext();
+      emitSseEvent("state_update", {
+        requestId: context.requestId,
+        threadId: context.threadId,
+        userId: context.userId,
+        data: {
+          status: "skill_planning_deterministic",
+          node: "skill_engine",
+          detail: {
+            skillName: input.skill.name,
+            toolMode: deterministicPlan.mode,
+            toolCount: deterministicPlan.calls.length
+          }
+        }
+      });
+      this.logger.info(
+        {
+          requestId: context.requestId,
+          threadId: context.threadId,
+          userId: context.userId,
+          skillName: input.skill.name,
+          toolMode: deterministicPlan.mode,
+          toolCount: deterministicPlan.calls.length
+        },
+        "skill_tool_plan_deterministic"
+      );
+      return deterministicPlan;
+    }
+
     try {
       return await input.model.invokeJson(
         input.model.helperMessages(
@@ -407,5 +505,16 @@ export class SkillEngine {
         return true;
       })
     });
+  }
+
+  private createSummaryFallbackOutput(
+    skillName: string,
+    toolResults: unknown[]
+  ): string {
+    return [
+      `Skill ${skillName} completed its tool calls, but its intermediate model summary was unavailable.`,
+      "Verified tool results:",
+      JSON.stringify(toolResults)
+    ].join("\n");
   }
 }

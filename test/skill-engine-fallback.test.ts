@@ -15,6 +15,123 @@ import {
 import { InMemoryToolRegistry } from "../src/tools/registry.js";
 
 describe("skill tool-plan fallback", () => {
+  it("skips the model tool planner for an explicit sandbox file path", async () => {
+    const logger = createLogger({ NODE_ENV: "test", LOG_LEVEL: "silent" } as never);
+    const events: Array<{ type: string; data: unknown }> = [];
+    const loader = new SkillLoader(path.resolve(process.cwd(), "skills"), logger);
+    const registry = new InMemoryToolRegistry();
+    registry.register({
+      name: "file_read",
+      description: "test file reader",
+      argsSchema: z.object({ path: z.string() }),
+      risk: "low",
+      execute: async () => ({})
+    });
+    const engine = new SkillEngine(
+      { SKILL_DETERMINISTIC_TOOL_PLAN_ENABLED: true } as never,
+      loader,
+      registry,
+      {} as ToolExecutor,
+      {} as ThreadStore,
+      logger
+    );
+    const model = {
+      helperMessages: () => {
+        throw new Error("The deterministic plan must not invoke the model");
+      },
+      invokeJson: async () => {
+        throw new Error("The deterministic plan must not invoke the model");
+      }
+    } as unknown as ModelAdapter;
+
+    const prepared = await withRuntimeContext(
+      {
+        requestId: "deterministic-plan-request",
+        threadId: "81aeeccd-dae0-4ea4-9d48-932f02c8d17c",
+        userId: "deterministic-plan-user",
+        logger,
+        events: { push: (event: { type: string; data: unknown }) => events.push(event) }
+      },
+      async () =>
+        await engine.prepare(
+          {
+            skillName: "workspace-inspection",
+            reason: "read file",
+            mode: "serial",
+            input: "读取 README.md"
+          },
+          model
+        )
+    );
+
+    expect(prepared.toolPlan.calls).toMatchObject([
+      { toolName: "file_read", args: { path: "README.md" } }
+    ]);
+    expect(events.some((event) => event.type === "state_update" && (event.data as { status?: string }).status === "skill_planning_deterministic")).toBe(true);
+  });
+
+  it.each(["MODEL_TIMEOUT", "MODEL_ERROR"] as const)(
+    "retains verified tool results when Skill summary returns %s",
+    async (errorCode) => {
+      const logger = createLogger({ NODE_ENV: "test", LOG_LEVEL: "silent" } as never);
+      const events: Array<{ type: string; data: unknown }> = [];
+      const engine = new SkillEngine(
+        { SKILL_SUMMARY_TIMEOUT_MS: 1, SKILL_SUMMARY_ENABLED: true } as never,
+        {} as SkillLoader,
+        {} as InMemoryToolRegistry,
+        {
+          executeCalls: async () => [
+            { call: {} as never, result: { path: "README.md", content: "ok" } }
+          ]
+        } as unknown as ToolExecutor,
+        {} as ThreadStore,
+        logger
+      );
+      const failedModel = {
+        helperMessages: () => [],
+        invokeText: async () => {
+          throw new AppError(errorCode, "simulated summary failure");
+        }
+      } as unknown as ModelAdapter;
+
+      const result = await withRuntimeContext(
+        {
+          requestId: "summary-fallback-request",
+          threadId: "81aeeccd-dae0-4ea4-9d48-932f02c8d17c",
+          userId: "summary-fallback-user",
+          logger,
+          events: { push: (event: { type: string; data: unknown }) => events.push(event) }
+        },
+        async () =>
+          await engine.executePrepared(
+            {
+              skill: {
+                name: "workspace-inspection",
+                description: "test",
+                directory: "skills/workspace-inspection",
+                filePath: "skills/workspace-inspection/SKILL.md",
+                allowedToolsList: ["file_read"],
+                triggers: [],
+                instructions: "Read the file."
+              },
+              input: "Read README.md",
+              mode: "serial",
+              reason: "test",
+              toolPlan: { mode: "serial", calls: [{ toolName: "file_read", toolCallId: "readme", args: { path: "README.md" } }] },
+              requiresConfirmation: false,
+              confirmations: []
+            },
+            failedModel,
+            { approvedHighRiskToolCallIds: [] }
+          )
+      );
+
+      expect(result.output).toContain("intermediate model summary was unavailable");
+      expect(result.toolResults).toEqual([{ path: "README.md", content: "ok" }]);
+      expect(events.some((event) => event.type === "state_update" && (event.data as { status?: string }).status === "skill_summary_fallback")).toBe(true);
+    }
+  );
+
   it.each(["MODEL_TIMEOUT", "MODEL_ERROR"] as const)(
     "derives a validated sandbox file call after %s",
     async (errorCode) => {

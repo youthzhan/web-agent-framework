@@ -47,7 +47,10 @@ export class ModelAdapter {
   ): Promise<{ text: string; usage?: TokenUsage }> {
     return await this.safeModelCall(async (signal) => {
       const response = await this.model.invoke(messages, {
-        signal: options.signal ?? signal
+        signal: options.signal ?? signal,
+        ...(options.maxOutputTokens
+          ? { maxTokens: options.maxOutputTokens }
+          : {})
       });
       const text = messageContentToText(response.content);
       const usage = this.extractUsage(response);
@@ -60,15 +63,24 @@ export class ModelAdapter {
     onToken: (token: string) => void,
     options: TextInvokeOptions
   ): Promise<{ text: string; usage?: TokenUsage }> {
+    let receivedFirstToken = false;
+    const emitToken = (token: string) => {
+      if (!receivedFirstToken) {
+        receivedFirstToken = true;
+        options.onFirstToken?.();
+      }
+      onToken(token);
+    };
     const responseState = options.responseState;
     if (responseState && this.responsesClient) {
       return await this.safeModelCall(
         async (signal) =>
           await this.streamResponsesApi(
             messages,
-            onToken,
+            emitToken,
             responseState,
-            signal
+            signal,
+            options.maxOutputTokens
           ),
         options.operation,
         options.timeoutMs
@@ -77,18 +89,24 @@ export class ModelAdapter {
     return await this.safeModelCall(async (signal) => {
       if (!this.model.stream) {
         const response = await this.model.invoke(messages, {
-          signal: options.signal ?? signal
+          signal: options.signal ?? signal,
+          ...(options.maxOutputTokens
+            ? { maxTokens: options.maxOutputTokens }
+            : {})
         });
         const text = messageContentToText(response.content);
         if (text) {
-          onToken(text);
+          emitToken(text);
         }
         const usage = this.extractUsage(response);
         return usage ? { text, usage } : { text };
       }
 
       const stream = await this.model.stream(messages, {
-        signal: options.signal ?? signal
+        signal: options.signal ?? signal,
+        ...(options.maxOutputTokens
+          ? { maxTokens: options.maxOutputTokens }
+          : {})
       });
       let text = "";
       let usage: TokenUsage | undefined;
@@ -97,7 +115,7 @@ export class ModelAdapter {
         const token = messageContentToText(chunk.content);
         if (token) {
           text += token;
-          onToken(token);
+          emitToken(token);
         }
         usage = this.extractUsage(chunk) ?? usage;
       }
@@ -215,7 +233,8 @@ export class ModelAdapter {
     messages: BaseMessage[],
     onToken: (token: string) => void,
     state: NonNullable<TextInvokeOptions["responseState"]>,
-    signal: AbortSignal
+    signal: AbortSignal,
+    maxOutputTokens?: number
   ): Promise<{ text: string; usage?: TokenUsage }> {
     const stream = await this.responsesClient!.responses.create(
       buildOpenAIResponsesRequest({
@@ -224,33 +243,94 @@ export class ModelAdapter {
         ...(state.previousResponseId
           ? { previousResponseId: state.previousResponseId }
           : {}),
-        store: this.getResponsesStoreEnabled()
+        store: this.getResponsesStoreEnabled(),
+        ...(maxOutputTokens ? { maxOutputTokens } : {})
       }),
       { signal }
     );
     let text = "";
+    let completedText: string | undefined;
     let responseId: string | undefined;
     let usage: TokenUsage | undefined;
 
     for await (const event of stream) {
-      if (event.type === "response.output_text.delta") {
-        text += event.delta;
-        onToken(event.delta);
+      const chunk = extractOpenAIResponsesTextChunk(event);
+      if (chunk.delta) {
+        text += chunk.delta;
+        onToken(chunk.delta);
       }
-      if (event.type === "response.completed") {
-        responseId = event.response.id;
-        usage = extractOpenAIResponsesUsage(event.response.usage);
-      }
+      completedText ??= chunk.completedText;
+      // OpenAI emits the response object on created, in-progress, and completed
+      // events. Compatible endpoints may omit the completed payload, so retain
+      // the first valid ID seen anywhere in the stream.
+      const metadata = extractOpenAIResponsesStreamMetadata(event);
+      responseId ??= metadata.responseId;
+      usage = metadata.usage ?? usage;
     }
 
-    if (!responseId) {
+    // Some compatible endpoints omit delta events and only include the final
+    // text in response.output_text or response.output_text.done. Emit it once
+    // at the end so the frontend still receives the standard token event.
+    if (!text && completedText) {
+      text = completedText;
+      onToken(text);
+    }
+    if (!text && responseId) {
+      const recoveredText = await this.retrieveResponsesOutput(responseId, signal);
+      if (recoveredText) {
+        text = recoveredText;
+        onToken(text);
+      }
+    }
+    if (!text.trim()) {
       throw new AppError(
         "MODEL_ERROR",
-        "Responses API stream completed without a response id"
+        "Responses API completed without output text"
       );
     }
-    await state.onResponseStored(responseId);
+
+    if (responseId) {
+      await state.onResponseStored(responseId);
+    } else {
+      // A response ID is only an optimization for vendor-side continuation.
+      // Do not discard a valid streamed reply when an OpenAI-compatible server
+      // does not expose one. The next turn will use persisted Redis history.
+      this.options.logger.warn(
+        {
+          provider: this.provider,
+          model: this.modelName,
+          store: this.getResponsesStoreEnabled(),
+          outputChars: text.length
+        },
+        "responses_api_stream_missing_response_id"
+      );
+    }
     return usage ? { text, usage } : { text };
+  }
+
+  private async retrieveResponsesOutput(
+    responseId: string,
+    signal: AbortSignal
+  ): Promise<string | undefined> {
+    try {
+      const response = await this.responsesClient!.responses.retrieve(
+        responseId,
+        undefined,
+        { signal }
+      );
+      return extractOpenAIResponsesTextChunk({ response }).completedText;
+    } catch (error) {
+      this.options.logger.warn(
+        {
+          provider: this.provider,
+          model: this.modelName,
+          responseId,
+          error: describeModelProviderError(error)
+        },
+        "responses_api_output_retrieval_failed"
+      );
+      return undefined;
+    }
   }
 
   private isResponsesStateEnabled(): boolean {
@@ -295,6 +375,7 @@ export class ModelAdapter {
     operation: string,
     timeoutMs = this.options.env.MODEL_TIMEOUT_MS
   ): Promise<T> {
+    const startedAt = Date.now();
     try {
       const result = await withTimeout(
         call,
@@ -306,7 +387,8 @@ export class ModelAdapter {
         {
           provider: this.provider,
           model: this.modelName,
-          operation
+          operation,
+          durationMs: Date.now() - startedAt
         },
         "model_call_completed"
       );
@@ -322,6 +404,7 @@ export class ModelAdapter {
           provider: this.provider,
           model: this.modelName,
           operation,
+          durationMs: Date.now() - startedAt,
           providerError
         },
         "model_call_failed"
@@ -379,6 +462,7 @@ export function buildOpenAIResponsesRequest(input: {
   messages: BaseMessage[];
   previousResponseId?: string;
   store: boolean;
+  maxOutputTokens?: number;
 }) {
   const instructions = input.messages
     .filter((message) => message instanceof SystemMessage)
@@ -398,9 +482,109 @@ export function buildOpenAIResponsesRequest(input: {
     ...(input.previousResponseId
       ? { previous_response_id: input.previousResponseId }
       : {}),
+    ...(input.maxOutputTokens
+      ? { max_output_tokens: input.maxOutputTokens }
+      : {}),
     store: input.store,
     stream: true as const
   };
+}
+
+/**
+ * Reads continuation metadata without relying on a single terminal event.
+ * Some OpenAI-compatible Responses endpoints send the ID only when the
+ * response is created or in progress, while others expose `response_id` on
+ * text events.
+ */
+export function extractOpenAIResponsesStreamMetadata(event: unknown): {
+  responseId?: string;
+  usage?: TokenUsage;
+} {
+  if (typeof event !== "object" || event === null || Array.isArray(event)) {
+    return {};
+  }
+  const record = event as Record<string, unknown>;
+  const response = asPlainRecord(record.response);
+  const responseId =
+    typeof response?.id === "string"
+      ? response.id
+      : typeof record.response_id === "string"
+        ? record.response_id
+        : typeof record.responseId === "string"
+          ? record.responseId
+          : undefined;
+  const usage = extractOpenAIResponsesUsage(response?.usage ?? record.usage);
+  return {
+    ...(responseId ? { responseId } : {}),
+    ...(usage ? { usage } : {})
+  };
+}
+
+/**
+ * Normalizes streamed text across OpenAI and compatible Responses endpoints.
+ * Delta events are preferred; final text is retained strictly as a fallback
+ * to avoid duplicating content when both event forms are sent.
+ */
+export function extractOpenAIResponsesTextChunk(event: unknown): {
+  delta?: string;
+  completedText?: string;
+} {
+  if (typeof event !== "object" || event === null || Array.isArray(event)) {
+    return {};
+  }
+  const record = event as Record<string, unknown>;
+  if (
+    record.type === "response.output_text.delta" &&
+    typeof record.delta === "string"
+  ) {
+    return { delta: record.delta };
+  }
+  if (
+    record.type === "response.output_text.done" &&
+    typeof record.text === "string"
+  ) {
+    return { completedText: record.text };
+  }
+  if (record.type === "response.content_part.done") {
+    const part = asPlainRecord(record.part);
+    if (part?.type === "output_text" && typeof part.text === "string") {
+      return { completedText: part.text };
+    }
+  }
+  if (record.type === "response.output_item.done") {
+    const outputText = extractResponseOutputText([record.item]);
+    if (outputText) {
+      return { completedText: outputText };
+    }
+  }
+  const response = asPlainRecord(record.response);
+  const outputText =
+    typeof response?.output_text === "string"
+      ? response.output_text
+      : extractResponseOutputText(response?.output);
+  return outputText ? { completedText: outputText } : {};
+}
+
+function extractResponseOutputText(value: unknown): string | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const text = value
+    .flatMap((item) => {
+      const message = asPlainRecord(item);
+      if (message?.type === "output_text" && typeof message.text === "string") {
+        return [message];
+      }
+      const content = message?.content;
+      return Array.isArray(content) ? content : [];
+    })
+    .map(asPlainRecord)
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .filter((item) => item.type === "output_text")
+    .map((item) => item.text)
+    .filter((item): item is string => typeof item === "string")
+    .join("");
+  return text || undefined;
 }
 
 function extractOpenAIResponsesUsage(value: unknown): TokenUsage | undefined {
@@ -421,6 +605,13 @@ function extractOpenAIResponsesUsage(value: unknown): TokenUsage | undefined {
     result.totalTokens = usage.total_tokens;
   }
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function asPlainRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
 }
 
 /**

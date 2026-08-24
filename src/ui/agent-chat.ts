@@ -40,7 +40,11 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         grid-template-columns: 252px minmax(0, 1fr) 316px;
         width: 100%;
         height: 100dvh;
+        min-width: 0;
+        min-height: 0;
       }
+
+      .app > * { min-width: 0; min-height: 0; }
 
       .sidebar,
       .inspector {
@@ -52,6 +56,8 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
       .sidebar {
         display: flex;
         flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
         border-right: 1px solid var(--line);
       }
 
@@ -94,7 +100,15 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
 
       .new-chat:hover { background: var(--accent-soft); }
       .section-label { padding: 5px 18px 8px; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; }
-      .sessions { flex: 1; min-height: 0; overflow-y: auto; padding: 0 9px 12px; }
+      .sessions {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+        padding: 0 9px 12px;
+      }
 
       .session-row { position: relative; margin-bottom: 3px; }
       .session {
@@ -129,7 +143,7 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         line-height: 1.5;
       }
 
-      .conversation { display: flex; min-width: 0; min-height: 0; flex-direction: column; background: var(--canvas); }
+      .conversation { display: flex; min-width: 0; min-height: 0; overflow: hidden; flex-direction: column; background: var(--canvas); }
       .topbar {
         display: flex;
         align-items: center;
@@ -212,6 +226,8 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
       .message.assistant .message-content th { background: var(--surface-muted); font-weight: 700; }
       .message.assistant .message-content hr { margin: 18px 0; border: 0; border-top: 1px solid var(--line); }
       .message-actions { display: flex; align-items: center; min-height: 24px; gap: 8px; margin-top: 4px; opacity: 0; transition: opacity 120ms ease; }
+      .message.assistant.is-loading .message-actions,
+      .message.assistant.empty-output .message-actions { display: none; }
       .message.user .message-actions { justify-content: flex-end; }
       .message:hover .message-actions, .message:focus-within .message-actions { opacity: 1; }
       .message-action { padding: 2px 0; border: 0; color: var(--muted); background: transparent; font-size: 11px; }
@@ -229,9 +245,9 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
       .approval-notice { margin: -8px 0 24px 43px; padding: 12px 14px; border: 1px solid #eccb99; border-radius: 6px; background: var(--warning-soft); color: #714a13; font-size: 13px; line-height: 1.5; }
       .approval-notice button { margin-top: 9px; border: 0; padding: 0; color: var(--warning); background: transparent; font-size: 12px; font-weight: 700; }
 
-      .composer-wrap { flex: 0 0 auto; padding: 12px 20px 20px; background: linear-gradient(to bottom, rgba(245,247,245,0), var(--canvas) 20%); }
+      .composer-wrap { flex: 0 0 auto; min-width: 0; padding: 12px 20px 20px; background: linear-gradient(to bottom, rgba(245,247,245,0), var(--canvas) 20%); }
       .composer { width: min(820px, 100%); margin: 0 auto; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); box-shadow: 0 8px 28px rgba(32, 50, 41, 0.07); }
-      .composer textarea { display: block; width: 100%; min-height: 54px; max-height: 180px; padding: 15px 16px 8px; resize: none; border: 0; outline: 0; color: var(--ink); background: transparent; line-height: 1.5; }
+      .composer textarea { display: block; width: 100%; max-width: 100%; min-height: 54px; max-height: 180px; padding: 15px 16px 8px; overflow-y: auto; resize: none; border: 0; outline: 0; color: var(--ink); background: transparent; line-height: 1.5; }
       .composer-footer { display: flex; align-items: center; justify-content: space-between; min-height: 46px; padding: 6px 8px 8px 14px; }
       .composer-hint { color: var(--muted); font-size: 11px; }
       .composer-actions { display: flex; gap: 7px; }
@@ -305,6 +321,17 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         .message.user .message-body { max-width: 90%; }
         .session-actions, .message-actions { opacity: 1; }
         .status-line span { display: none; }
+      }
+
+      /* At compact desktop widths the permanent session column can squeeze
+         the composer. Keep the conversation full width and make sessions a
+         drawer; its own list remains independently scrollable. */
+      @media (max-width: 860px) and (min-width: 721px) {
+        .app { grid-template-columns: minmax(0, 1fr); }
+        .sidebar { position: fixed; top: 0; left: 0; bottom: 0; width: min(280px, 88vw); transform: translateX(-105%); box-shadow: var(--shadow); transition: transform 180ms ease; z-index: 30; }
+        body.show-sessions .sidebar { transform: translateX(0); }
+        body.show-sessions .scrim { display: block; }
+        .mobile-controls { display: flex; }
       }
     </style>
   </head>
@@ -409,6 +436,7 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
       const storageKey = "web-agent-framework:sessions";
       let threadId = "";
       let activeConfirmation = null;
+      let approvalSubmitting = false;
       let isRunning = false;
       let viewId = crypto.randomUUID();
       let loadingThreadId = "";
@@ -704,6 +732,10 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         run.markdown += token;
         if (!runIsVisible(run)) return;
         const text = run.assistantContent || createAssistantMessage(run);
+        if (run.markdown.trim()) {
+          const row = text.closest(".message");
+          row?.classList.remove("is-loading", "empty-output");
+        }
         text.classList.remove("loading");
         text.classList.add("typing");
         text.dataset.rawMarkdown = run.markdown;
@@ -776,9 +808,12 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
       function createAssistantMessage(run) {
         const text = addMessage("assistant", run.markdown || "");
         run.assistantContent = text;
+        const row = text.closest(".message");
         if (run.markdown) {
           text.classList.add("typing");
+          row?.classList.remove("is-loading", "empty-output");
         } else {
+          row?.classList.add("is-loading");
           text.classList.add("loading");
           const dot = document.createElement("span");
           dot.className = "loading-dot";
@@ -854,6 +889,9 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
         }
         activeConfirmation = record;
         byId("approval").classList.add("visible");
+        // Each approval is independent. Never carry the previous approval
+        // note into the next queued tool confirmation.
+        byId("approvalReason").value = "";
         byId("approvalMeta").textContent = record.toolName + " · " + (method ? method + " " : "") + target + " · 创建于 " + formatTime(record.createdAt);
         byId("approvalArgs").value = JSON.stringify(record.args, null, 2);
         const notice = document.createElement("div");
@@ -875,6 +913,7 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
       function hideApproval() {
         activeConfirmation = null;
         byId("approval").classList.remove("visible");
+        byId("approvalReason").value = "";
       }
 
       function handleEvent(event, run) {
@@ -916,6 +955,9 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
                 run.assistantContent.closest(".message")?.remove();
                 run.assistantContent = null;
               } else {
+                const row = run.assistantContent.closest(".message");
+                row?.classList.remove("is-loading");
+                row?.classList.toggle("empty-output", !run.markdown.trim());
                 renderAssistantMarkdown(run.assistantContent);
                 run.assistantContent.classList.remove("typing", "loading");
               }
@@ -1016,13 +1058,14 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
       }
 
       async function submitApproval(approved) {
-        if (!activeConfirmation || isRunning) return;
+        if (!activeConfirmation || isRunning || approvalSubmitting) return;
         let argsOverride;
         try { argsOverride = JSON.parse(byId("approvalArgs").value); }
         catch {
           addActivity("审批参数无效", "工具参数必须是合法 JSON", "error");
           return;
         }
+        approvalSubmitting = true;
         const confirmation = activeConfirmation;
         const run = runs.get(confirmation.threadId) || createRun();
         run.threadId = confirmation.threadId;
@@ -1056,12 +1099,30 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
           }
         } catch (error) {
           if (error.name !== "AbortError") {
-            run.running = false;
-            run.status = "failed";
-            addMessage("system", error.message || String(error), "error");
-            setRunState(false, "审批请求失败", "failed");
+            const message = error.message || String(error);
+            if (
+              /Thread is not waiting for human confirmation|Confirmation id mismatch|already being processed/i.test(
+                message
+              )
+            ) {
+              // The checkpoint was already resumed elsewhere or the browser
+              // submitted an old approval. Do not present this as a model/tool
+              // failure and do not leave a stale approval panel visible.
+              run.running = false;
+              run.status = "completed";
+              hideApproval();
+              closeDrawers();
+              setRunState(false, "审批已处理", "");
+              addActivity("审批状态已更新", "该审批已经被处理或已失效。", "warning", run);
+            } else {
+              run.running = false;
+              run.status = "failed";
+              addMessage("system", message, "error");
+              setRunState(false, "审批请求失败", "failed");
+            }
           }
         } finally {
+          approvalSubmitting = false;
           byId("approve").disabled = false;
           byId("reject").disabled = false;
           run.controller = null;
@@ -1097,7 +1158,15 @@ export const AGENT_CHAT_HTML = String.raw`<!doctype html>
           if (threadId !== id || loadingThreadId !== id) return;
           byId("userId").value = data.thread.userId;
           data.messages.forEach((message) => {
-            if (message.role === "user" || message.role === "assistant") addMessage(message.role, message.content);
+            if (message.role === "user") {
+              addMessage("user", message.content);
+            } else if (message.role === "assistant") {
+              addMessage(
+                message.metadata?.systemError ? "system" : "assistant",
+                message.content,
+                message.metadata?.systemError ? "error" : ""
+              );
+            }
           });
           const session = sessions.find((item) => item.threadId === id);
           byId("chatTitle").textContent = (session && session.title) || "历史会话";
