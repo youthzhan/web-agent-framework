@@ -112,6 +112,8 @@ describe("skill tool-plan fallback", () => {
                 filePath: "skills/workspace-inspection/SKILL.md",
                 allowedToolsList: ["file_read"],
                 triggers: [],
+                routingKeywords: [],
+                routingExcludes: [],
                 instructions: "Read the file."
               },
               input: "Read README.md",

@@ -133,10 +133,18 @@ export class AgentWorkflow {
         };
       }
 
-      const matches = await this.skillLoader.findMatchDetails(state.message);
-      // The catalog is intentionally trigger-gated. Asking the model to scan
-      // every installed Skill for ordinary chat adds a full extra request and
-      // made simple messages such as "你好" wait for planner timeout.
+      const exactMatches = await this.skillLoader.findMatchDetails(state.message);
+      const matches = exactMatches.length > 0
+        ? exactMatches
+        : this.env.SKILL_SEMANTIC_RECALL_ENABLED
+          ? await this.skillLoader.findSemanticCandidates(
+              state.message,
+              this.env.SKILL_SEMANTIC_RECALL_LIMIT
+            )
+          : [];
+      // No lexical or semantic candidates means ordinary chat. Only candidate
+      // Skills reach the model planner; the model never scans every full
+      // Skill document for a generic message.
       if (matches.length === 0) {
         this.logger.info(
           {
@@ -852,6 +860,9 @@ export class AgentWorkflow {
               input.routing.matches.length > 0
                 ? `Matched Skill candidates: ${input.routing.matches.map((match) => match.summary.name).join(", ")}. Directly named Skills must all be included; intent matches may be omitted when irrelevant.`
                 : "No deterministic Skill candidate was found; decide from the full catalog.",
+              input.routing.matches.some((match) => match.source === "semantic")
+                ? "These candidates came from semantic recall only. Treat them as hypotheses, verify the user intent against each Skill description, and select none when the task does not require a Skill."
+                : "",
               'Return JSON shaped exactly as: {"response":"optional direct guidance","directAnswer":false,"skills":[{"skillName":"available-name","reason":"why needed","mode":"serial|parallel","input":"specific task for this skill"}]}.',
               `Available skills:\n${input.skillContext || "(none)"}`
             ].join("\n")
@@ -915,6 +926,13 @@ export class AgentWorkflow {
         },
         "agent_planner_fallback"
       );
+
+      // A semantic candidate is not authorization to execute a Skill. If the
+      // judge is unavailable, fail closed and let the final node answer as a
+      // normal conversation instead of guessing a tool route.
+      if (matches.some((match) => match.source === "semantic")) {
+        return AgentPlanSchema.parse({ directAnswer: true });
+      }
 
       return matches.length > 0
         ? createSerialFallbackPlan(input.state.message, matches)

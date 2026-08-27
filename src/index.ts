@@ -33,6 +33,7 @@ import { ToolExecutor } from "./tools/executor.js";
 import { createFileReadTool } from "./tools/file-read.js";
 import { createHttpRequestTool } from "./tools/http-request.js";
 import { InMemoryToolRegistry } from "./tools/registry.js";
+import { registerSkillRuntimeTools } from "./tools/skill-runtime.js";
 import { AGENT_CHAT_HTML } from "./ui/agent-chat.js";
 
 const SSE_HEADERS = {
@@ -428,8 +429,9 @@ async function main(): Promise<void> {
   const registry = new InMemoryToolRegistry();
   registry.register(createFileReadTool(env));
   registry.register(createHttpRequestTool(env));
+  await registerSkillRuntimeTools(env.skillsDirsAbs, env, registry, logger);
 
-  const skillLoader = new SkillLoader(env.skillsDirAbs, logger);
+  const skillLoader = new SkillLoader(env.skillsDirsAbs, logger);
   const toolExecutor = new ToolExecutor(registry, threadStore, logger);
   const skillEngine = new SkillEngine(
     env,

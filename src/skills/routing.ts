@@ -2,7 +2,7 @@ import { AgentPlanSchema, type AgentPlan, type SkillMatch } from "./types.js";
 import type { ToolExecutionMode } from "../tools/types.js";
 
 export type SkillRoutingDecision = {
-  source: "explicit" | "intent" | "model";
+  source: "explicit" | "intent" | "semantic" | "model";
   scheduling: "deterministic" | "dynamic";
   matches: SkillMatch[];
   plan?: AgentPlan;
@@ -28,7 +28,9 @@ export function routeSkillConversation(
 
   const source = matches.some((match) => match.source === "explicit")
     ? "explicit"
-    : "intent";
+    : matches.some((match) => match.source === "intent")
+      ? "intent"
+      : "semantic";
   const cues = findModeCues(message);
   const hasDependencySequence = /先[\s\S]+?(?:再|然后|之后|最后)|基于[\s\S]+?(?:再|然后)|depends?\s+on|(?:first|after)[\s\S]+?then/i.test(
     message
@@ -36,7 +38,9 @@ export function routeSkillConversation(
 
   // One Skill does not need cross-Skill scheduling. Its internal tool planner
   // still makes an independent serial/parallel decision for tool calls.
-  if (matches.length === 1) {
+  // Semantic recall only supplies candidates. Even with one candidate, the
+  // model must judge whether the user's intent really belongs to that Skill.
+  if (matches.length === 1 && source !== "semantic") {
     return {
       source,
       scheduling: "deterministic",
@@ -97,7 +101,9 @@ function createPlan(
       reason:
         match.source === "explicit"
           ? "用户在对话中直接指定了该 Skill。"
-          : `用户意图命中触发词：${match.matchedTriggers.join(", ")}`,
+          : match.source === "semantic"
+            ? `语义召回候选：${match.matchedTriggers.join(", ")}`
+            : `用户意图命中触发词：${match.matchedTriggers.join(", ")}`,
       mode: modes[index] ?? "serial",
       input: message
     }))

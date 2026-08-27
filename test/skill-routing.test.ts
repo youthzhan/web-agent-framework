@@ -13,6 +13,8 @@ function match(
       description: `${name} description`,
       allowedToolsList: [],
       triggers: [],
+      routingKeywords: [],
+      routingExcludes: [],
       directory: `skills/${name}`,
       filePath: `skills/${name}/SKILL.md`
     },
@@ -117,6 +119,20 @@ describe("conversational Skill routing", () => {
     expect(decision).toMatchObject({
       source: "intent",
       scheduling: "dynamic"
+    });
+    expect(decision.plan).toBeUndefined();
+  });
+
+  it("never executes a single semantic candidate without model judgment", () => {
+    const decision = routeSkillConversation(
+      "获取 OneDemo 场景中的机器人运行概况",
+      [match("m4-scheduling", "semantic", 2)]
+    );
+
+    expect(decision).toMatchObject({
+      source: "semantic",
+      scheduling: "dynamic",
+      matches: [{ source: "semantic" }]
     });
     expect(decision.plan).toBeUndefined();
   });

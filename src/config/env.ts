@@ -85,6 +85,8 @@ const EnvSchema = z.object({
   // For explicit file paths and HTTP URLs, derive a schema-validated tool
   // plan locally instead of spending an extra model request on planning.
   SKILL_DETERMINISTIC_TOOL_PLAN_ENABLED: BooleanEnvSchema,
+  SKILL_SEMANTIC_RECALL_ENABLED: BooleanEnvSchema,
+  SKILL_SEMANTIC_RECALL_LIMIT: z.coerce.number().int().min(1).max(5).default(3),
   SKILL_PLANNER_FALLBACK_ENABLED: BooleanEnvSchema,
   SKILL_TOOL_PLAN_FALLBACK_ENABLED: BooleanEnvSchema,
   MODEL_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
@@ -156,16 +158,54 @@ const EnvSchema = z.object({
     .default(524_288),
   HTTP_TOOL_ALLOWED_HOSTS: z.string().default("*"),
 
-  SKILLS_DIR: z.string().default("./skills")
+  // M4 tools never accept an arbitrary URL from the model. They resolve
+  // relative /api paths against this configured origin and add these
+  // server-side credentials.
+  M4_BASE_URL: z.string().url().default("http://localhost:5800"),
+  M4_DEFAULT_SCENE_NAME: z.preprocess(emptyToUndefined, z.string().optional()),
+  M4_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
+  M4_MAX_RESPONSE_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(524_288),
+  M4_AUTH_MODE: z.enum(["header", "cookie"]).default("header"),
+  M4_USER_ID: z.preprocess(emptyToUndefined, z.string().optional()),
+  M4_USER_TOKEN: z.preprocess(emptyToUndefined, z.string().optional()),
+  // M4's user-session headers are derived from its cookie names. They are
+  // intentionally configurable for deployments using a gateway adapter.
+  M4_USER_ID_HEADER: z.string().default("x-xzz-qyq"),
+  M4_USER_TOKEN_HEADER: z.string().default("x-xzz-qyx"),
+  M4_APP_ID: z.preprocess(emptyToUndefined, z.string().optional()),
+  M4_APP_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
+  M4_COOKIE: z.preprocess(emptyToUndefined, z.string().optional()),
+  M4_USERNAME: z.preprocess(emptyToUndefined, z.string().optional()),
+  M4_PASSWORD: z.preprocess(emptyToUndefined, z.string().optional()),
+
+  // The independent M4 Skill pack is installed as an npm dependency. Keep
+  // the built-in skills root first so local skills can override by name.
+  SKILLS_DIR: z.string().default("./skills;./node_modules/m4-skills/skills"),
+  // Optional additional roots. On Windows use `;` between directories; on
+  // POSIX use `:`. Commas are accepted on both platforms for .env files.
+  SKILLS_DIRS: z.preprocess(emptyToUndefined, z.string().optional())
 });
 
 export type AppEnv = z.infer<typeof EnvSchema> & {
   checkpointBackend: "redis" | "memory";
   sandboxRootAbs: string;
   skillsDirAbs: string;
+  skillsDirsAbs: string[];
   httpAllowedHosts: string[];
   modelCatalog: ModelCatalogEntry[];
 };
+
+function splitSkillDirectories(value: string): string[] {
+  const separator = process.platform === "win32" ? /[;,]/ : /[:,;]/;
+  return value
+    .split(separator)
+    .map((directory) => directory.trim())
+    .filter(Boolean);
+}
 
 export function loadEnv(): AppEnv {
   const parsed = EnvSchema.parse(process.env);
@@ -199,11 +239,17 @@ export function loadEnv(): AppEnv {
     provider: parsed.DEFAULT_MODEL_PROVIDER,
     model: resolveDefaultModelName(parsed)
   });
+  const skillDirectories = splitSkillDirectories(
+    parsed.SKILLS_DIRS ?? parsed.SKILLS_DIR
+  );
   return {
     ...parsed,
     checkpointBackend,
     sandboxRootAbs: path.resolve(process.cwd(), parsed.SANDBOX_ROOT),
-    skillsDirAbs: path.resolve(process.cwd(), parsed.SKILLS_DIR),
+    skillsDirAbs: path.resolve(process.cwd(), skillDirectories[0] ?? parsed.SKILLS_DIR),
+    skillsDirsAbs: skillDirectories.map((directory) =>
+      path.resolve(process.cwd(), directory)
+    ),
     httpAllowedHosts: parsed.HTTP_TOOL_ALLOWED_HOSTS.split(",")
       .map((host) => host.trim())
       .filter(Boolean),

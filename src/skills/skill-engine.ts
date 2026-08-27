@@ -10,11 +10,14 @@ import type { ToolCall } from "../tools/types.js";
 import type { ToolRegistry } from "../tools/types.js";
 import type { ThreadStore } from "../persistence/thread-store.js";
 import { HumanConfirmationRecordSchema } from "../schemas/human-confirmation.js";
+import type { JsonValue } from "../schemas/json.js";
 import {
   SkillToolPlanSchema,
   type PreparedSkillExecution,
   type SkillPlanItem,
-  type LoadedSkill
+  type LoadedSkill,
+  type SkillOperation,
+  type SkillOperationParameter
 } from "./types.js";
 import type { SkillLoader } from "./skill-loader.js";
 import { runByPlannedMode } from "./scheduling.js";
@@ -299,12 +302,16 @@ export class SkillEngine {
     description: string;
     allowedToolsList: string[];
     triggers: string[];
+    metadata?: Record<string, string> | undefined;
   }>): string {
     return summaries
-      .map(
-        (skill) =>
-          `- ${skill.name}: ${skill.description} (tools: ${skill.allowedToolsList.join(", ") || "none"}; triggers: ${skill.triggers.join(", ") || "none"})`
-      )
+      .map((skill) => {
+        const metadata = Object.entries(skill.metadata ?? {})
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, value]) => `${key}=${value}`)
+          .join(", ");
+        return `- ${skill.name}: ${skill.description} (tools: ${skill.allowedToolsList.join(", ") || "none"}; triggers: ${skill.triggers.join(", ") || "none"}; metadata: ${metadata || "none"})`;
+      })
       .join("\n");
   }
 
@@ -316,7 +323,7 @@ export class SkillEngine {
   }): Promise<z.infer<typeof SkillToolPlanSchema>> {
     const deterministicPlan =
       this.env.SKILL_DETERMINISTIC_TOOL_PLAN_ENABLED
-        ? this.createExplicitToolPlan(input.skill, input.plan.input)
+        ? this.createDeclaredToolPlan(input.skill, input.plan.input)
         : undefined;
     if (deterministicPlan) {
       const context = getRuntimeContext();
@@ -354,6 +361,8 @@ export class SkillEngine {
           [
             "You are a skill execution planner.",
             `Skill name: ${input.skill.name}`,
+            `Skill metadata: ${JSON.stringify(input.skill.metadata ?? {})}`,
+            `Skill declared operations: ${JSON.stringify(input.skill.operations ?? [])}`,
             `Skill instructions:\n${input.skill.instructions}`,
             `Available skill tools: ${input.toolNames}`,
             "Only choose tools listed in allowedTools.",
@@ -377,7 +386,7 @@ export class SkillEngine {
         throw error;
       }
 
-      const fallback = this.createExplicitToolPlan(
+      const fallback = this.createDeclaredToolPlan(
         input.skill,
         input.plan.input
       );
@@ -421,17 +430,29 @@ export class SkillEngine {
   }
 
   /**
-   * Planner-failure fallback intentionally accepts only explicit, low-ambiguity
-   * parameters. The normal model planner remains responsible for all other
-   * tool plans, including any parameter synthesis or multi-step decisions.
+   * Compile Skill-owned low-ambiguity operations first. The normal model
+   * planner remains responsible for all other tool plans, including arbitrary
+   * parameter synthesis and multi-step decisions.
    */
-  private createExplicitToolPlan(
+  private createDeclaredToolPlan(
     skill: LoadedSkill,
     input: string
   ): z.infer<typeof SkillToolPlanSchema> | undefined {
     const mode = /\bparallel\b|\u5e76\u884c|\u540c\u65f6|\u72ec\u7acb/i.test(input)
       ? "parallel"
       : "serial";
+
+    for (const operation of skill.operations ?? []) {
+      const operationPlan = this.compileDeclaredOperation(
+        skill,
+        operation,
+        input,
+        mode
+      );
+      if (operationPlan) {
+        return operationPlan;
+      }
+    }
 
     if (skill.allowedToolsList.includes("file_read")) {
       const paths = this.extractRelativeFilePaths(input);
@@ -462,6 +483,137 @@ export class SkillEngine {
     }
 
     return undefined;
+  }
+
+  private compileDeclaredOperation(
+    skill: LoadedSkill,
+    operation: SkillOperation,
+    input: string,
+    requestedMode: "serial" | "parallel"
+  ): z.infer<typeof SkillToolPlanSchema> | undefined {
+    if (!this.matchesDeclaredOperation(operation, input)) {
+      return undefined;
+    }
+
+    const compiled = this.compileOperationArguments(operation, input);
+    if (!compiled) {
+      return undefined;
+    }
+
+    const operationMode = operation.mode ?? requestedMode;
+    const calls = operation.preflight.map((preflight, index) => ({
+      toolName: preflight.tool,
+      toolCallId: `${skill.name}:${operation.id}:preflight:${index}:${randomUUID()}`,
+      args: {
+        path: preflight.path,
+        method: preflight.method,
+        query: preflight.query,
+        ...(preflight.body !== undefined ? { body: preflight.body } : {})
+      }
+    }));
+    calls.push({
+      toolName: operation.tool,
+      toolCallId: `${skill.name}:${operation.id}:${randomUUID()}`,
+      args: {
+        path: compiled.path,
+        method: operation.method,
+        query: compiled.query,
+        ...(compiled.body !== undefined ? { body: compiled.body } : {})
+      }
+    });
+    return SkillToolPlanSchema.parse({ mode: operationMode, calls });
+  }
+
+  private matchesDeclaredOperation(
+    operation: SkillOperation,
+    input: string
+  ): boolean {
+    const matchesAny = (terms: readonly string[]) =>
+      terms.length === 0 || terms.some((term) => this.matchesOperationTerm(input, term));
+    return (
+      matchesAny(operation.intent) &&
+      !operation.exclude.some((term) => this.matchesOperationTerm(input, term)) &&
+      matchesAny(operation.requiresAny)
+    );
+  }
+
+  private matchesOperationTerm(input: string, term: string): boolean {
+    try {
+      return new RegExp(term, "i").test(input);
+    } catch {
+      return input.toLocaleLowerCase().includes(term.toLocaleLowerCase());
+    }
+  }
+
+  private compileOperationArguments(
+    operation: SkillOperation,
+    input: string
+  ): { path: string; query: Record<string, string>; body?: JsonValue } | undefined {
+    const query: Record<string, string> = { ...operation.query };
+    let path = operation.path;
+    let body: JsonValue | undefined = operation.body === undefined
+      ? undefined
+      : structuredClone(operation.body);
+
+    for (const parameter of operation.parameters) {
+      const values = this.extractOperationParameter(parameter, input);
+      const value = values.length > 0
+        ? values.join(parameter.separator)
+        : parameter.value ?? this.readEnvValue(parameter.env);
+      if (value === undefined || value === "") {
+        if (parameter.required) {
+          return undefined;
+        }
+        continue;
+      }
+
+      if (parameter.target === "query") {
+        query[parameter.name] = value;
+      } else if (parameter.target === "path") {
+        path = path.replaceAll(`{${parameter.name}}`, encodeURIComponent(value));
+      } else {
+        if (body === undefined) {
+          body = {};
+        }
+        if (!isRecord(body)) {
+          return undefined;
+        }
+        setNestedValue(body, parameter.name, value);
+      }
+    }
+
+    return { path, query, ...(body !== undefined ? { body } : {}) };
+  }
+
+  private extractOperationParameter(
+    parameter: SkillOperationParameter,
+    input: string
+  ): string[] {
+    if (!parameter.pattern) {
+      return [];
+    }
+    try {
+      const flags = parameter.repeat ? "gi" : "i";
+      const expression = new RegExp(parameter.pattern, flags);
+      if (parameter.repeat) {
+        return [...input.matchAll(expression)]
+          .map((match) => match[parameter.group] ?? match[0])
+          .filter((value): value is string => Boolean(value));
+      }
+      const match = expression.exec(input);
+      const value = match?.[parameter.group] ?? match?.[0];
+      return value ? [value] : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private readEnvValue(name?: string): string | undefined {
+    if (!name) {
+      return undefined;
+    }
+    const value = (this.env as unknown as Record<string, unknown>)[name];
+    return typeof value === "string" && value.length > 0 ? value : undefined;
   }
 
   private extractRelativeFilePaths(input: string): string[] {
@@ -517,4 +669,28 @@ export class SkillEngine {
       JSON.stringify(toolResults)
     ].join("\n");
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function setNestedValue(
+  target: Record<string, unknown>,
+  name: string,
+  value: string
+): void {
+  const segments = name.split(".").filter(Boolean);
+  if (segments.length === 0) {
+    return;
+  }
+  let cursor = target;
+  for (const segment of segments.slice(0, -1)) {
+    const existing = cursor[segment];
+    if (!isRecord(existing)) {
+      cursor[segment] = {};
+    }
+    cursor = cursor[segment] as Record<string, unknown>;
+  }
+  cursor[segments[segments.length - 1]!] = value;
 }

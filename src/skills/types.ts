@@ -2,11 +2,74 @@ import { z } from "zod";
 import { HumanConfirmationRecordSchema } from "../schemas/human-confirmation.js";
 import { JsonValueSchema } from "../schemas/json.js";
 
+const RoutingTermsSchema = z.preprocess(
+  (value) =>
+    typeof value === "string"
+      ? value
+          .split(/[,，;；|\n]+/)
+          .map((term) => term.trim())
+          .filter(Boolean)
+      : value,
+  z.array(z.string().min(1).max(80)).default([])
+);
+
+const OperationTermsSchema = z.preprocess(
+  (value) => typeof value === "string" ? [value] : value,
+  z.array(z.string().min(1).max(200)).default([])
+);
+
+export const SkillOperationParameterSchema = z.object({
+  name: z.string().min(1).max(80),
+  target: z.enum(["query", "body", "path"]).default("query"),
+  pattern: z.string().min(1).max(500).optional(),
+  group: z.number().int().nonnegative().max(20).default(1),
+  repeat: z.boolean().default(false),
+  separator: z.string().max(10).default(","),
+  env: z.string().min(1).max(100).optional(),
+  value: z.string().max(500).optional(),
+  required: z.boolean().default(false)
+});
+
+export type SkillOperationParameter = z.infer<
+  typeof SkillOperationParameterSchema
+>;
+
+export const SkillOperationCallSchema = z.object({
+  tool: z.string().min(1).max(80),
+  method: z.string().regex(/^[A-Z]+$/).default("GET"),
+  path: z.string().startsWith("/").max(1_000),
+  query: z.record(z.string(), z.string()).default({}),
+  body: JsonValueSchema.optional()
+});
+
+export const SkillOperationSchema = z.object({
+  id: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+  intent: OperationTermsSchema,
+  exclude: OperationTermsSchema,
+  requiresAny: OperationTermsSchema,
+  tool: z.string().min(1).max(80),
+  method: z.string().regex(/^[A-Z]+$/),
+  path: z.string().startsWith("/").max(1_000),
+  query: z.record(z.string(), z.string()).default({}),
+  body: JsonValueSchema.optional(),
+  parameters: z.array(SkillOperationParameterSchema).max(30).default([]),
+  preflight: z.array(SkillOperationCallSchema).max(10).default([]),
+  mode: z.enum(["serial", "parallel"]).optional()
+});
+
+export type SkillOperation = z.infer<typeof SkillOperationSchema>;
+
 export const SkillFrontmatterSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().min(1).max(500),
   allowedTools: z.string().optional(),
-  triggers: z.array(z.string().min(1).max(80)).max(30).default([]),
+  triggers: z.array(z.string().min(1).max(80)).max(100).default([]),
+  // Accept both YAML arrays and the comma-delimited strings used by the
+  // independently published M4 Skill pack.
+  routingKeywords: RoutingTermsSchema.pipe(z.array(z.string().min(1).max(80)).max(80)),
+  routingExcludes: RoutingTermsSchema.pipe(z.array(z.string().min(1).max(80)).max(40)),
+  operations: z.array(SkillOperationSchema).max(100).optional(),
   compatibility: z.string().optional(),
   license: z.string().optional(),
   metadata: z.record(z.string(), z.string()).optional()
@@ -24,7 +87,7 @@ export type SkillSummary = z.infer<typeof SkillSummarySchema>;
 
 export const SkillMatchSchema = z.object({
   summary: SkillSummarySchema,
-  source: z.enum(["explicit", "intent"]),
+  source: z.enum(["explicit", "intent", "semantic"]),
   score: z.number().nonnegative(),
   position: z.number().int().nonnegative(),
   matchedTriggers: z.array(z.string()).default([])
